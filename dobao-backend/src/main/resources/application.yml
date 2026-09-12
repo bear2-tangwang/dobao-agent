@@ -1,0 +1,83 @@
+server:
+  port: 8888
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
+spring:
+  ai:
+    openai:
+      #      api-key: @dashscope.api.key@
+      api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
+      #      base-url: https://dashscope.aliyuncs.com/compatible-mode/
+      base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
+      chat:
+        options:
+          model: qwen3.7-flash
+          temperature: 0.7
+          maxTokens: 5000
+
+      embedding:
+        #        base-url: https://dashscope.aliyuncs.com/compatible-mode/
+        base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
+        #        api-key: @dashscope.api.key@
+        api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
+        options:
+          model: qwen3.7-text-embedding
+          dimmension: 1024
+
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/dobao?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8 # ????????
+    username: root # ????????
+    password: 123456 # ????????
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # ?????
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 60000
+      connection-timeout: 30000
+      max-lifetime: 1800000
+
+  # MyBatis-Plus ??
+  mybatis-plus:
+    mapper-locations: classpath:mapper/*.xml
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+minio:
+  url: http://127.0.0.1:9000/   # ????????
+  accessKey: admin # ????????
+  secretKey: admin@123456 # ????????
+  bucketName: dobao-agent
+  endpoint: http://127.0.0.1:9000/
+
+embeddings:
+  store:
+    host: localhost   # ????????
+    port: 5433   # ????????
+    database: dobao-vector   # ????????
+    user: pgvector   # ????????
+    password: 123321   # ????????
+
+# Tavily ??????
+tavily:
+  api-key: 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  # ????????
+  mcp-url: https://mcp.tavily.com/mcp/
+
+#grsai:
+#  nanobanana:
+#    api-key: sk-ec99XXXXXXXXXXXXXX # ????????
+
+logging:
+  level:
+    org:
+      springframework:
+        ai: INFO
+    io:
+      modelcontextprotocol:
+        client: ERROR
