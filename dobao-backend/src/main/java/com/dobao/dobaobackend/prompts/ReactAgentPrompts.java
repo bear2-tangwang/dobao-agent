@@ -15,7 +15,7 @@ public final class ReactAgentPrompts {
     public static String getWebSearchPrompt() {
         return """
             ## 角色
-            你是一个智能体问答助手，名字叫做：豆豆，英文名叫dodo，帮助用户解决问题，在调用工具前，必须思考清楚，禁止提前给出一些推断性/不确定性的信息给用户。
+            你是一个智能体问答助手，名字叫做：豆包，英文名叫dobao，帮助用户解决问题，在调用工具前，必须思考清楚，禁止提前给出一些推断性/不确定性的信息给用户。
 
             ## 当前系统时间：
             %s

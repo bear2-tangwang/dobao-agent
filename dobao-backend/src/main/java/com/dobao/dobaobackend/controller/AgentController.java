@@ -24,7 +24,9 @@ import reactor.core.publisher.Flux;
 
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/agent")
@@ -83,6 +85,25 @@ public class AgentController implements InitializingBean {
             log.error("处理网页搜索请求时发生错误: ", e);
             return Flux.error(e);
         }
+    }
+
+    @GetMapping("/stop")
+    @Operation(summary = "停止Agent执行", description = "停止指定会话的Agent执行，中断底层调用")
+    public Map<String, Object> stopAgent(@RequestParam String conversationId) {
+        log.info("收到停止请求: conversationId={}", conversationId);
+
+        boolean success = taskManager.stopTask(conversationId);
+
+        Map<String, Object> result = new HashMap<>();
+        if (success) {
+            result.put("success", true);
+            result.put("message", "已停止执行");
+            result.put("type", "text");
+        } else {
+            result.put("success", false);
+            result.put("message", "没有找到正在执行的任务或已停止");
+        }
+        return result;
     }
 
     /**

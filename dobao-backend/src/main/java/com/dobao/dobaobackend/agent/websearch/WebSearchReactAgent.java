@@ -114,8 +114,8 @@ public class WebSearchReactAgent extends BaseAgent {
     }
 
     private Flux<String> streamInternal(String conversationId, String question) {
-        List<Message> messages = Collections.synchronizedList(new ArrayList<>());
-        boolean useMemory = conversationId != null && chatMemory != null;
+        List<Message> messages = Collections.synchronizedList(new ArrayList<>()); // 用于存储所有消息 线程安全
+        boolean useMemory = conversationId != null && chatMemory != null; // 是否使用会话记忆
 
         // 检查是否已有任务在执行
         Flux<String> checkResult = checkRunningTask(conversationId);
@@ -127,7 +127,10 @@ public class WebSearchReactAgent extends BaseAgent {
         initTimers();
         clearUsedTools();
 
-        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<String> sink = Sinks // Sink 流式数据发射器(可手动触发发送/终止)
+                .many()   // 对应Flux 多元素
+                .unicast() // 唯一订阅者
+                .onBackpressureBuffer();  // 开启背压缓冲 平衡大模型的输出
 
         // 注册任务到管理器
         AgentTaskManager.TaskInfo taskInfo = registerTask(conversationId, sink);
@@ -167,18 +170,19 @@ public class WebSearchReactAgent extends BaseAgent {
         hasSentFinalResult.set(false);
         roundCounter.set(0);
 
-        // 收集最终答案（纯文本），存储memory
+        // 收集最终答案 便于后续存库
         StringBuilder finalAnswerBuffer = new StringBuilder();
         // 收集思考过程
         StringBuilder thinkingBuffer = new StringBuilder();
 
         AgentState agentState = new AgentState();
 
+        // ReactAgent 循环执行
         scheduleRound(messages, sink, roundCounter, hasSentFinalResult, finalAnswerBuffer, useMemory, conversationId, agentState, thinkingBuffer);
 
         return sink.asFlux()
-                .doOnNext(chunk -> {
-                    recordFirstResponse();
+                .doOnNext(chunk -> { // 做发送前的数据处理
+                    recordFirstResponse(); // 记录第一个响应时间
                     // 解析 JSON，如果是 type=text，则只拼接 content；如果是 type=thinking，则拼接 thinking
                     try {
                         JSONObject json = JSON.parseObject(chunk);
@@ -250,7 +254,7 @@ public class WebSearchReactAgent extends BaseAgent {
                 .stream()
                 .chatResponse()
                 .publishOn(Schedulers.boundedElastic())
-                .doOnNext(chunk -> processChunk(chunk, sink, state))
+                .doOnNext(chunk -> processChunk(chunk, sink, state)) // 处理每个 chunk
                 .doOnComplete(() -> finishRound(messages, sink, state, roundCounter, hasSentFinalResult, finalAnswerBuffer, useMemory, conversationId, agentState, thinkingBuffer))
                 .doOnError(err -> {
                     if (!hasSentFinalResult.get()) {
@@ -266,6 +270,12 @@ public class WebSearchReactAgent extends BaseAgent {
         }
     }
 
+    /**
+     * 每一个chunk的处理器
+     * @param chunk 消息
+     * @param sink 流式发送器
+     * @param state 该轮次状态
+     */
     private void processChunk(ChatResponse chunk, Sinks.Many<String> sink, RoundState state) {
         if (chunk == null || chunk.getResult() == null ||
                 chunk.getResult().getOutput() == null) {
@@ -293,10 +303,15 @@ public class WebSearchReactAgent extends BaseAgent {
         }
     }
 
+    /**
+     * 通过 mergeToolCall() 处理流式传输中 ToolCall 参数分片问题，保证参数的完整性
+     * @param state 轮状态
+     * @param incoming 工具
+     */
     private void mergeToolCall(RoundState state, AssistantMessage.ToolCall incoming) {
         for (int i = 0; i < state.toolCalls.size(); i++) {
             AssistantMessage.ToolCall existing = state.toolCalls.get(i);
-
+            // 如果 id 相同，说明是同一个 ToolCall 的增量参数
             if (existing.id().equals(incoming.id())) {
                 String mergedArgs = Objects.toString(existing.arguments(), "") + Objects.toString(incoming.arguments(), "");
 
@@ -307,7 +322,7 @@ public class WebSearchReactAgent extends BaseAgent {
             }
         }
 
-        // 新的 toolcall
+        // 新的 toolCall
         state.toolCalls.add(incoming);
     }
 
@@ -321,7 +336,7 @@ public class WebSearchReactAgent extends BaseAgent {
         // 如果整轮都没有 tool_call，才是最终答案
         if (state.getMode() != RoundMode.TOOL_CALL) {
             String referenceJson = "";
-            String toolsStr = getUsedToolsString();
+//            String toolsStr = getUsedToolsString();
             String finalText = state.textBuffer.toString();
 
             // 输出参考链接
@@ -350,11 +365,12 @@ public class WebSearchReactAgent extends BaseAgent {
         AssistantMessage assistantMsg = AssistantMessage.builder().toolCalls(state.toolCalls).build();
         messages.add(assistantMsg);
 
+        // 如果最大轮次已到，强制结束流
         if (maxRounds > 0 && roundCounter.get() >= maxRounds) {
             forceFinalStream(messages, sink, hasSentFinalResult, state, conversationId, useMemory, agentState, thinkingBuffer);
             return;
         }
-
+        // 执行工具调用
         executeToolCalls(sink, state.toolCalls, messages, hasSentFinalResult, state, agentState, () -> {
             if (!hasSentFinalResult.get()) {
                 scheduleRound(messages, sink, roundCounter,
@@ -364,6 +380,9 @@ public class WebSearchReactAgent extends BaseAgent {
         });
     }
 
+    /**
+     *  达到最大轮数 强制输出
+     */
     private void forceFinalStream(List<Message> messages, Sinks.Many<String> sink, AtomicBoolean hasSentFinalResult, RoundState state,
                                   String conversationId, boolean useMemory, AgentState agentState, StringBuilder thinkingBuffer) {
         // 创建新的消息列表，确保系统提示词在最前面
@@ -453,13 +472,16 @@ public class WebSearchReactAgent extends BaseAgent {
         }
     }
 
+    /**
+     * 执行工具调用
+     */
     private void executeToolCalls(Sinks.Many<String> sink, List<AssistantMessage.ToolCall> toolCalls, List<Message> messages, AtomicBoolean hasSentFinalResult, RoundState state, AgentState agentState, Runnable onComplete) {
         AtomicInteger completedCount = new AtomicInteger(0);
         int totalToolCalls = toolCalls.size();
 
         for (AssistantMessage.ToolCall tc : toolCalls) {
-            Schedulers.boundedElastic().schedule(() -> {
-                if (hasSentFinalResult.get()) {
+            Schedulers.boundedElastic().schedule(() -> { // 流式异步线程调用工具
+                if (hasSentFinalResult.get()) { //终止工具调用
                     completeToolCall(completedCount, totalToolCalls, onComplete);
                     return;
                 }
@@ -473,6 +495,7 @@ public class WebSearchReactAgent extends BaseAgent {
                     completeToolCall(completedCount, totalToolCalls, onComplete);
                     return;
                 }
+                // 若是搜索工具，需要解析 query 参数
                 if (toolName.contains("search")) {
                     JSONObject args = JSON.parseObject(argsJson);
                     String query = (String) args.get("query");
@@ -506,13 +529,25 @@ public class WebSearchReactAgent extends BaseAgent {
         }
     }
 
+    /**
+     *
+     * @param completedCount 当前工具调用轮数
+     * @param total  工具调用总数
+     * @param onComplete 下一轮思考函数
+     */
     private void completeToolCall(AtomicInteger completedCount, int total, Runnable onComplete) {
         int current = completedCount.incrementAndGet();
-        if (current >= total) {
-            onComplete.run();
+        if (current >= total) { // 所有工具调用完成
+            log.info("所有工具调用完成，执行下一轮思考");
+            onComplete.run();// 执行下一轮思考
         }
     }
 
+    /**
+     * 解析 tavily 搜索结果 ，并存储到 state 中
+     * @param resultJson 搜索结果
+     * @param state agent调用工具状态记录
+     */
     private void parseSearchResult(String resultJson, AgentState state) {
         try {
             JsonNode root = MAPPER.readTree(resultJson);
