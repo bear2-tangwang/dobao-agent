@@ -1,18 +1,18 @@
-/** 智能体 */
+/** Agent */
 export interface Agent {
   id: string
   name: string
   icon: string
 }
 
-/** 参考来源 */
+/** Reference source */
 export interface Reference {
   url: string
   title: string
   content: string
 }
 
-/** 消息 */
+/** Message */
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -30,7 +30,7 @@ export interface Message {
   pptFile?: string
 }
 
-/** 会话 */
+/** Chat */
 export interface Chat {
   id: string
   title: string
@@ -40,7 +40,7 @@ export interface Chat {
   isNew?: boolean
 }
 
-/** SSE 流式帧 */
+/** SSE Stream payload */
 export interface StreamPayload {
   type: string
   content?: unknown
@@ -48,7 +48,7 @@ export interface StreamPayload {
   data?: unknown
 }
 
-/** 会话详情中的单条记录 */
+/** Session message */
 export interface SessionMessage {
   id: number | string
   question?: string
@@ -56,10 +56,13 @@ export interface SessionMessage {
   thinking?: string
   reference?: unknown
   fileid?: string
+  fileName?: string
+  fileType?: string
+  fileSize?: number
   createTime?: string
 }
 
-/** 会话详情接口返回 */
+/** Session detail */
 export interface SessionDetail {
   conversationId: string
   agentType?: string

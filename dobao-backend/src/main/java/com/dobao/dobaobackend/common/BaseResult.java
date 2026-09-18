@@ -21,7 +21,7 @@ public class BaseResult<T> implements Serializable {
     }
 
     public static <T> BaseResult<T> newSuccess() {
-        return new BaseResult<>(CODE_SUCCESS, "success", null);
+        return new BaseResult<>(CODE_SUCCESS, "操作成功", null);
     }
 
     public static <T> BaseResult<T> newSuccess(T data) {

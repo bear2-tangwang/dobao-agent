@@ -146,7 +146,7 @@ public class AgentResponse {
         return obj.toJSONString();
     }
 
-    // ===== Getters and Setters =====
+    // ===== Getter / Setter =====
 
     public String getType() {
         return type;

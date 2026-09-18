@@ -135,7 +135,7 @@ export function useChat() {
                 role: 'user',
                 content: msg.question,
                 file: !!msg.fileid,
-                fileName: msg.fileid ? '已上传文件' : null,
+                fileName: msg.fileid ? (msg.fileName || '已上传文件') : null,
                 thinking: [],
                 reference: [],
                 recommend: [],
@@ -155,8 +155,8 @@ export function useChat() {
                 thinking: msg.thinking ? [msg.thinking] : [],
                 reference,
                 recommend: [],
-                // 默认折叠状态,需要点击展开
-                showThinking: false,
+                // 有思考过程时默认展开
+                showThinking: !!msg.thinking,
                 showReference: false,
                 hasThinking: !!msg.thinking,
                 timestamp: msg.createTime ? new Date(msg.createTime).getTime() : Date.now()
@@ -249,15 +249,6 @@ export function useChat() {
   // ===== 消息发送和流式处理 =====
   const processStreamData = (data: StreamPayload, aiMsg: Message) => {
     if (data.type === STREAM_TYPES.TEXT && data.content) {
-      if (aiMsg.hasThinking) {
-        aiMsg.showThinking = false
-        if (currentThinkingSectionDiv) {
-          const thinkingContent = currentThinkingSectionDiv.querySelector('.thinking-content')
-          if (thinkingContent) {
-            ;(thinkingContent as HTMLElement).style.display = 'none'
-          }
-        }
-      }
       streamedContent += data.content
       updateStreamContent(streamedContent)
     } else if (data.type === STREAM_TYPES.THINKING && data.content) {
@@ -285,10 +276,6 @@ export function useChat() {
         }
         if (Array.isArray(refsData)) {
           aiMsg.reference = processReferences(refsData)
-          // 自动展开参考来源
-          if (aiMsg.reference.length > 0) {
-            aiMsg.showReference = true
-          }
         }
       } catch (e) {
         console.warn('解析reference失败:', e, '原始数据:', data.content)

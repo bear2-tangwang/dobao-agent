@@ -1,6 +1,5 @@
 package com.dobao.dobaobackend.service.impl;
 
-
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.dobao.dobaobackend.entity.AiSession;
@@ -15,10 +14,14 @@ import java.util.List;
 
 /**
  * AI会话服务实现类
+ * 负责会话问答记录的保存、查询与答案回填
  */
 @Service
 public class AiSessionServiceImpl extends ServiceImpl<AiSessionMapper, AiSession> implements AiSessionService {
 
+    /**
+     * 查询指定会话最近的对话记录（按创建时间倒序）
+     */
     @Override
     public List<AiSession> findRecentBySessionId(String sessionId, int maxRecords) {
         LambdaQueryWrapper<AiSession> queryWrapper = new LambdaQueryWrapper<AiSession>()
@@ -29,6 +32,9 @@ public class AiSessionServiceImpl extends ServiceImpl<AiSessionMapper, AiSession
         return this.list(queryWrapper);
     }
 
+    /**
+     * 保存用户提问，返回生成的会话记录（用于后续回填答案）
+     */
     @Override
     public AiSession saveQuestion(SaveQuestionRequest request) {
         AiSession aiSession = new AiSession();
@@ -37,6 +43,11 @@ public class AiSessionServiceImpl extends ServiceImpl<AiSessionMapper, AiSession
         aiSession.setFileid(request.getFileid());
         aiSession.setTools(request.getTools());
         aiSession.setFirstResponseTime(request.getFirstResponseTime());
+        if (request.getAgentType() == null) {
+            aiSession.setAgentType("chat");
+        } else {
+            aiSession.setAgentType(request.getAgentType());
+        }
         aiSession.setCreateTime(LocalDateTime.now());
         aiSession.setUpdateTime(LocalDateTime.now());
 
@@ -44,6 +55,9 @@ public class AiSessionServiceImpl extends ServiceImpl<AiSessionMapper, AiSession
         return aiSession;
     }
 
+    /**
+     * 回填AI回复，只更新请求中非null的字段
+     */
     @Override
     public boolean updateAnswer(UpdateAnswerRequest request) {
         AiSession session = this.getById(request.getId());
@@ -65,12 +79,11 @@ public class AiSessionServiceImpl extends ServiceImpl<AiSessionMapper, AiSession
             if (request.getTotalResponseTime() != null) {
                 session.setTotalResponseTime(request.getTotalResponseTime());
             }
-            if(request.getRecommend() != null){
+            if (request.getRecommend() != null) {
                 session.setRecommend(request.getRecommend());
             }
             return this.updateById(session);
         }
         return false;
     }
-
 }

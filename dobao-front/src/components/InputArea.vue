@@ -53,81 +53,76 @@ defineExpose({ focusInput })
 
 <template>
   <div class="input-area">
-    <!-- 智能体选择器 -->
-    <div class="agent-selector">
-      <div
-        v-for="agent in agents"
-        :key="agent.id"
-        :class="['agent-item', { active: selectedAgent === agent.id }]"
-        @click="$emit('select-agent', agent.id)"
-      >
-        <span class="agent-icon">{{ agent.icon }}</span>
-        <span class="agent-name">{{ agent.name }}</span>
-        <i v-if="selectedAgent === agent.id" class="fas fa-check check-icon"></i>
-      </div>
-    </div>
-
-    <!-- 文件预览区域 -->
-    <div v-if="selectedFile" class="file-preview">
-      <div class="file-preview-item">
-        <div class="file-icon-wrapper">
-          <i class="fas fa-file file-icon"></i>
-        </div>
-        <div class="file-info">
-          <div class="file-name">{{ selectedFile.name }}</div>
-          <div class="file-size">{{ formatFileSize(selectedFile.size) }}</div>
-          <div v-if="isUploading" class="upload-parsing">
+    <!-- 豆包风格单卡片输入框 -->
+    <div class="input-card">
+      <!-- 文件 chip（上传后显示） -->
+      <div v-if="selectedFile" class="file-chip-row">
+        <div class="file-chip">
+          <div class="chip-icon">
+            <i class="fas fa-file"></i>
+          </div>
+          <div class="chip-meta">
+            <span class="chip-name">{{ selectedFile.name }}</span>
+            <span class="chip-size">{{ formatFileSize(selectedFile.size) }}</span>
+          </div>
+          <div v-if="isUploading" class="chip-parsing">
             <i class="fas fa-spinner fa-spin"></i>
             <span>解析中...</span>
           </div>
-        </div>
-        <div class="file-actions">
-          <button v-if="!isUploading" class="remove-file" @click="$emit('remove-file')" title="删除文件">
-            <i class="fas fa-trash-alt"></i>
+          <button v-if="!isUploading" class="chip-remove" title="删除文件" @click="$emit('remove-file')">
+            <i class="fas fa-times"></i>
           </button>
         </div>
       </div>
-    </div>
 
-    <!-- 输入容器 -->
-    <div class="input-container">
-      <!-- 文件上传按钮（仅文件问答模式可用） -->
-      <button
-        v-if="selectedAgent === 'file' && !selectedFile"
-        class="file-btn"
-        :class="{ disabled: isUploading }"
-        :disabled="isUploading"
-        @click="fileInput?.click()"
-        title="上传文件（限1个）"
-      >
-        <i class="fas fa-paperclip"></i>
-      </button>
-      <input ref="fileInput" type="file" @change="$emit('handle-file-select', $event)" style="display: none;" />
-
-      <!-- 文件图标（文件问答模式显示） -->
-      <div v-if="selectedFile && !isUploading" class="input-file-icon" title="文件问答模式">
-        <i class="fas fa-file-alt"></i>
-      </div>
-
-      <!-- 输入框 -->
+      <!-- 文本输入区 -->
       <textarea
         v-model="inputModel"
-        :placeholder="selectedAgent === 'file' && selectedFile ? '文件问答模式... (删除文件可切换回对话助手)' : '输入消息... (支持 Markdown，Shift+Enter 换行)'"
+        :placeholder="selectedAgent === 'chat' && selectedFile ? '已上传文件，可文件问答 + 联网搜索 (如需普通对话请删除文件)' : '输入消息... (支持 Markdown，Shift+Enter 换行)'"
         @keydown.enter.exact.prevent="$emit('send')"
         @keydown.enter.shift.exact="inputModel += '\n'"
         rows="1"
         ref="textareaInput"
       ></textarea>
 
-      <!-- 发送/停止按钮 -->
-      <button
-        :class="['send-btn', { stop: isSending, disabled: !isSending && (!canSend || isUploading) }]"
-        @click="isSending ? $emit('stop') : $emit('send')"
-        :disabled="isSending ? false : (!canSend || isUploading)"
-      >
-        <i v-if="isSending" class="fas fa-stop"></i>
-        <i v-else class="fas fa-paper-plane"></i>
-      </button>
+      <!-- 底部工具栏 -->
+      <div class="input-toolbar">
+        <!-- 上传按钮（回形针，仅对话模式） -->
+        <button
+          v-if="selectedAgent === 'chat' && !selectedFile"
+          class="toolbar-upload"
+          :class="{ disabled: isUploading }"
+          :disabled="isUploading"
+          title="上传文件（限1个）"
+          @click="fileInput?.click()"
+        >
+          <i class="fas fa-paperclip"></i>
+        </button>
+        <input ref="fileInput" type="file" style="display: none;" @change="$emit('handle-file-select', $event)" />
+
+        <!-- 智能体功能入口（卡片内、可横向滚动） -->
+        <div class="toolbar-agents">
+          <div
+            v-for="agent in agents"
+            :key="agent.id"
+            :class="['toolbar-agent', { active: selectedAgent === agent.id }]"
+            @click="$emit('select-agent', agent.id)"
+          >
+            <i :class="agent.icon"></i>
+            <span class="toolbar-agent-name">{{ agent.name }}</span>
+          </div>
+        </div>
+
+        <!-- 发送 / 停止按钮 -->
+        <button
+          :class="['send-btn', { stop: isSending, disabled: !isSending && (!canSend || isUploading) }]"
+          @click="isSending ? $emit('stop') : $emit('send')"
+          :disabled="isSending ? false : (!canSend || isUploading)"
+        >
+          <i v-if="isSending" class="fas fa-stop"></i>
+          <i v-else class="fas fa-paper-plane"></i>
+        </button>
+      </div>
     </div>
   </div>
 </template>

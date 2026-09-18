@@ -1,7 +1,7 @@
 import { STREAM_TYPES } from '@/utils/constants'
 import type { SessionDetail, Reference } from '@/types'
 
-/** 测试后端连接(实际探测 /file/list 是否可达) */
+/** Test backend connection */
 export const testConnection = async (backendUrl: string): Promise<{ success: boolean; error?: string }> => {
   try {
     await fetch(`${backendUrl}/file/list`, {
@@ -17,7 +17,7 @@ export const testConnection = async (backendUrl: string): Promise<{ success: boo
   }
 }
 
-/** 加载会话列表 */
+/** Load chat list */
 export const loadChats = async (backendUrl: string) => {
   try {
     const response = await fetch(`${backendUrl}/session/list?pageNum=1&pageSize=100`, {
@@ -53,7 +53,7 @@ export const loadChats = async (backendUrl: string) => {
   }
 }
 
-/** 获取会话详情 */
+/** Get chat detail */
 export const getChatDetail = async (backendUrl: string, chatId: string): Promise<SessionDetail | null> => {
   try {
     const response = await fetch(`${backendUrl}/session/${chatId}`, {
@@ -78,7 +78,7 @@ export const getChatDetail = async (backendUrl: string, chatId: string): Promise
   }
 }
 
-/** 删除会话 */
+/** Delete chat */
 export const deleteChat = async (backendUrl: string, chatId: string) => {
   try {
     const response = await fetch(`${backendUrl}/session/${chatId}`, {
@@ -104,7 +104,7 @@ export const deleteChat = async (backendUrl: string, chatId: string) => {
   }
 }
 
-/** 上传文件 */
+/** Upload file */
 export const uploadFile = async (backendUrl: string, file: File) => {
   const formData = new FormData()
   formData.append('file', file)
@@ -128,11 +128,9 @@ export const uploadFile = async (backendUrl: string, file: File) => {
   throw new Error(result.message || '文件上传失败')
 }
 
-/** 根据智能体选择流式聊天 URL */
+/** Build stream chat URL */
 export const getStreamChatUrl = (backendUrl: string, selectedAgent: string, hasFile: boolean): string => {
-  if (hasFile) {
-    return `${backendUrl}/agent/file/stream`
-  } else if (selectedAgent === 'ppt') {
+  if (selectedAgent === 'ppt') {
     return `${backendUrl}/agent/pptx/stream`
   } else if (selectedAgent === 'deep') {
     return `${backendUrl}/agent/deep/stream`
@@ -140,7 +138,7 @@ export const getStreamChatUrl = (backendUrl: string, selectedAgent: string, hasF
   return `${backendUrl}/agent/chat/stream`
 }
 
-/** 建立流式 SSE 连接,返回 reader 供逐行解析 */
+/** Build stream SSE connection */
 export const streamChat = async (
   backendUrl: string,
   agentId: string,
@@ -176,7 +174,7 @@ export const streamChat = async (
   return response.body.getReader()
 }
 
-/** 停止流式请求 */
+/** Stop stream request */
 export const stopStream = async (backendUrl: string, conversationId: string) => {
   try {
     const stopUrl = `${backendUrl}/agent/stop?conversationId=${conversationId}`
@@ -188,6 +186,6 @@ export const stopStream = async (backendUrl: string, conversationId: string) => 
   }
 }
 
-// 为保持与原引用一致,导出 STREAM_TYPES
+// Keep STREAM_TYPES export
 export { STREAM_TYPES }
 export type { Reference }

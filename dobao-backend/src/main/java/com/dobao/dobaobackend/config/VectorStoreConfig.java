@@ -7,11 +7,15 @@ import org.springframework.context.annotation.Configuration;
 
 import javax.sql.DataSource;
 
+/**
+ * 向量库数据源配置
+ * 独立于MySQL数据源，为pgvector向量检索提供连接池
+ */
 @Configuration
 public class VectorStoreConfig {
 
     /**
-     * 全局唯一连接池
+     * 向量库连接池（PostgreSQL + pgvector）
      */
     @Bean(name = "pgVectorDataSource")
     public DataSource pgVectorDataSource(

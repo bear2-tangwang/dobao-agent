@@ -118,7 +118,7 @@ public abstract class BaseAgent {
      */
     public ChatMemory createPersistentChatMemory(String sessionId, int maxMessages) {
         if (sessionService == null) {
-            log.warn("sessionService is null, cannot load chat memory");
+            log.warn("会话服务为空，无法加载对话记忆");
             return MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
         }
 
@@ -417,7 +417,7 @@ public abstract class BaseAgent {
         return false;
     }
 
-    // ===== Getters and Setters =====
+    // ===== Getter / Setter =====
 
     public void setChatMemory(ChatMemory chatMemory) {
         this.chatMemory = chatMemory;
