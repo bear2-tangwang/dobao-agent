@@ -1,6 +1,7 @@
 package com.dobao.dobaobackend.controller;
 
 import com.dobao.dobaobackend.agent.chat.ChatReactAgent;
+import com.dobao.dobaobackend.agent.ppt.PPTBuilderAgent;
 import com.dobao.dobaobackend.service.AgentTaskManager;
 import com.dobao.dobaobackend.service.AiSessionService;
 import com.dobao.dobaobackend.tool.FileContentService;
@@ -25,10 +26,7 @@ import reactor.core.publisher.Flux;
 
 import java.net.http.HttpRequest;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Agent 对话控制器
@@ -91,6 +89,29 @@ public class AgentController implements InitializingBean {
             return Flux.error(e);
         }
     }
+    @GetMapping(value = "/pptx/stream", produces = "text/event-stream;charset=UTF-8")
+    @Operation(summary = "PPT 生成", description = "接收用户需求并返回流式响应，基于模板驱动生成PPT")
+    public Flux<String> pptxStream(@RequestParam(required = true) String query,
+                                   @RequestParam(required = true) String conversationId) {
+        log.info("收到PPT Builder请求: query={}, conversationId={}", query, conversationId);
+
+        if (query == null || query.trim().isEmpty()) {
+            log.warn("查询参数为空或无效");
+            return Flux.error(new IllegalArgumentException("查询参数不能为空"));
+        }
+
+        try {
+            PPTBuilderAgent pptBuilderAgent = initPPTBuilderAgent();
+            // 使用持久化记忆加载历史记录
+            ChatMemory persistentMemory = pptBuilderAgent.createPersistentChatMemory(conversationId, 30);
+            pptBuilderAgent.setChatMemory(persistentMemory);
+            return pptBuilderAgent.execute(conversationId, query);
+        } catch (Exception e) {
+            log.error("处理PPT Builder请求时发生错误: ", e);
+            return Flux.error(e);
+        }
+    }
+
 
     /**
      * 停止正在执行的 Agent 任务
@@ -115,6 +136,18 @@ public class AgentController implements InitializingBean {
             result.put("message", "没有正在执行的任务或任务已停止");
         }
         return result;
+    }
+    /**
+     * 初始化PPT Builder Agent
+     */
+    private PPTBuilderAgent initPPTBuilderAgent() {
+        log.info("初始化PPT Builder Agent...");
+
+        return new PPTBuilderAgent(
+                chatModel,
+                Arrays.asList(webSearchToolCallbacks),
+                sessionService,
+                taskManager);
     }
 
     /**
