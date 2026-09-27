@@ -19,8 +19,13 @@ import java.util.Map;
 @Service
 public class ImageGenerationService {
 
-    // Qwen API配置
-    private static final String QWEN_API_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    // Qwen 文生图配置（endpoint 与模型名均外置到 application.yml，便于切换主机/模型）
+    @Value("${qwen.image.api-url}")
+    private String qwenApiUrl;
+
+    @Value("${qwen.image.model}")
+    private String qwenImageModel;
+
     @Value("${spring.ai.openai.api-key}")
     private String apiKey;
 
@@ -62,7 +67,7 @@ public class ImageGenerationService {
         try {
             // 构建请求参数
             Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("model", "qwen-image-2.0-pro");
+            requestBody.put("model", qwenImageModel);
 
             // input 使用 messages 格式
             Map<String, Object> textContent = new HashMap<>();
@@ -85,7 +90,7 @@ public class ImageGenerationService {
 
             // 创建HTTP请求
             HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(QWEN_API_URL))
+                    .uri(URI.create(qwenApiUrl))
                     .timeout(Duration.ofMinutes(5));
 
             // 添加请求头

@@ -26,16 +26,36 @@ public class MinioService {
     private String endpoint; //Minio 服务端地址
 
     /**
-     * 确保 bucket 存在，不存在则创建
+     * 桶初始化标记（桶已存在 + 公共读策略已生效）。
+     * 应用启动后只需成功初始化一次，避免每次上传都重复调用 bucketExists / setBucketPolicy。
+     */
+    private volatile boolean bucketReady = false;
+
+    /**
+     * 确保 bucket 存在，并按需把存储桶策略设置为公共读。
+     * <p>
+     * 注意：策略设置必须独立于"桶是否存在"判断之外。
+     * 历史缺陷：策略设置曾被写在 {@code if (!bucketExists)} 内部，
+     * 导致桶一旦已存在（例如手工创建过、或旧版本创建过），公共读策略永远不会被应用，
+     * 对象全部保持私有，匿名访问返回 403 AccessDenied。
      *
      * @param publicRead 是否将存储桶策略设置为公共读
      */
     private void createBucketIfNotExists(boolean publicRead) throws Exception {
-        if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) {
-            // 不存在就创建 bucket
-            minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+        if (bucketReady) {
+            return;
+        }
+        synchronized (this) {
+            if (bucketReady) {
+                return;
+            }
 
-            // 设置 bucket 策略为公共读
+            // 1. 桶不存在则创建
+            if (!minioClient.bucketExists(BucketExistsArgs.builder().bucket(bucketName).build())) {
+                minioClient.makeBucket(MakeBucketArgs.builder().bucket(bucketName).build());
+            }
+
+            // 2. 无论桶是新建的还是早已存在，都幂等地确保公共读策略已生效
             if (publicRead) {
                 /**
                  * 配置AWS S3 IAM 策略 JSON
@@ -60,6 +80,8 @@ public class MinioService {
                                 .build()
                 );
             }
+
+            bucketReady = true;
         }
     }
 

@@ -118,7 +118,7 @@ createApp({
 
                             if (msg.answer || msg.thinking) {
                                 const reference = processReferences(msg.reference);
-                                // 默认折叠状态，需要点击展开
+                                // 思考过程默认展开；参考来源默认折叠
                                 const showRef = false;
                                 chat.messages.push({
                                     id: 'assistant_' + msg.id,
@@ -127,7 +127,7 @@ createApp({
                                     thinking: msg.thinking ? [msg.thinking] : [],
                                     reference: reference,
                                     recommend: [],
-                                    showThinking: false,
+                                    showThinking: !!msg.thinking,
                                     showReference: showRef,
                                     hasThinking: !!msg.thinking,
                                     timestamp: msg.createTime ? new Date(msg.createTime).getTime() : Date.now()
@@ -404,15 +404,6 @@ createApp({
                         try {
                             const data = JSON.parse(cleanBuffer);
                             if (data.type === STREAM_TYPES.TEXT && data.content) {
-                                if (aiMsg.hasThinking) {
-                                    aiMsg.showThinking = false;
-                                    if (currentThinkingSectionDiv) {
-                                        const thinkingContent = currentThinkingSectionDiv.querySelector('.thinking-content');
-                                        if (thinkingContent) {
-                                            thinkingContent.style.display = 'none';
-                                        }
-                                    }
-                                }
                                 aiMsg.content += data.content;
                                 updateStreamContent(aiMsg.content);
                             } else if (data.type === STREAM_TYPES.COMPLETE) {
@@ -447,15 +438,6 @@ createApp({
 
         const processStreamData = (data, aiMsg, thinkingContent) => {
             if (data.type === STREAM_TYPES.TEXT && data.content) {
-                if (aiMsg.hasThinking) {
-                    aiMsg.showThinking = false;
-                    if (currentThinkingSectionDiv) {
-                        const thinkingContent = currentThinkingSectionDiv.querySelector('.thinking-content');
-                        if (thinkingContent) {
-                            thinkingContent.style.display = 'none';
-                        }
-                    }
-                }
                 aiMsg.content += data.content;
                 updateStreamContent(aiMsg.content);
             } else if (data.type === STREAM_TYPES.THINKING && data.content) {

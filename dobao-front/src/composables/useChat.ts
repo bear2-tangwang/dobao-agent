@@ -255,9 +255,18 @@ export function useChat() {
       if (!aiMsg.hasThinking) {
         if (currentThinkingSectionDiv) {
           currentThinkingSectionDiv.style.display = 'block'
-        }
-        if (currentThinkingContentDiv) {
-          currentThinkingContentDiv.style.display = 'block'
+          // v-show="msg.showThinking" 挂在 .thinking-content 上（.thinking-text 的父节点），
+          // 只解除 .thinking-text 的 display 是无效的，父节点仍是 display:none
+          const wrapper = currentThinkingSectionDiv.querySelector<HTMLElement>('.thinking-content')
+          if (wrapper) {
+            wrapper.style.display = 'block'
+          }
+          // 流式期间 aiMsg 是 push 进响应式数组的原始对象，直接改它不会触发 Vue 重渲染，
+          // 折叠箭头的 class 绑定会一直停留在初始状态，这里手动同步一次
+          const arrow = currentThinkingSectionDiv.querySelector<HTMLElement>('.collapse-arrow')
+          if (arrow) {
+            arrow.classList.add('is-open')
+          }
         }
       }
       aiMsg.hasThinking = true
@@ -344,7 +353,12 @@ export function useChat() {
       thinking: [],
       reference: [],
       recommend: [],
-      showThinking: false,
+      // 思考过程默认展开：在"首次渲染"就置为 true，
+      // 这样 .thinking-content 从一开始就是 display:'' ，
+      // 不依赖流式期间的任何响应式更新或 DOM 补丁（流式时 aiMsg 是原始对象，
+      // 改它不会触发重渲染，箭头/折叠状态都容易停在初始值）。
+      // 有思考内容时 .thinking-section 才会显示，所以这里置 true 不会提前露出空面板。
+      showThinking: true,
       showReference: false,
       hasThinking: false,
       timestamp: Date.now()
