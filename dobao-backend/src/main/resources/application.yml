@@ -14,7 +14,7 @@ spring:
       base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
       chat:
         options:
-          model: qwen3.7-flash
+          model: qwen3.8-2.4t-a95b
           temperature: 0.7
           maxTokens: 5000
 
@@ -28,11 +28,10 @@ spring:
           dimmension: 1024
 
   datasource:
-    url: jdbc:mysql://127.0.0.1:3306/dobao?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8 # ????????
-    username: root # ????????
-    password: 123456 # ????????
+    url: jdbc:mysql://127.0.0.1:3306/dobao?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8
+    username: root
+    password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
-    # ?????
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -40,7 +39,7 @@ spring:
       connection-timeout: 30000
       max-lifetime: 1800000
 
-  # MyBatis-Plus ??
+  # MyBatis-Plus 配置
   mybatis-plus:
     mapper-locations: classpath:mapper/*.xml
   servlet:
@@ -50,28 +49,35 @@ spring:
       max-request-size: 50MB
 
 minio:
-  url: http://127.0.0.1:9000/   # ????????
-  accessKey: admin # ????????
-  secretKey: admin@123456 # ????????
+  url: http://127.0.0.1:9000/
+  accessKey: admin
+  secretKey: admin@123456
   bucketName: dobao-agent
   endpoint: http://127.0.0.1:9000/
 
+# Qwen 文生图（ImageGenerationService 使用）
+qwen:
+  image:
+    # workspace MaaS 主机；如需改用公共百炼主机，替换为 https://dashscope.aliyuncs.com
+    api-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+    model: qwen-image-3.0
+
 embeddings:
   store:
-    host: localhost   # ????????
-    port: 5433   # ????????
-    database: dobao-vector   # ????????
-    user: pgvector   # ????????
-    password: 123321   # ????????
+    host: localhost
+    port: 5433
+    database: dobao-vector
+    user: pgvector
+    password: 123321
 
-# Tavily ??????
+# Tavily
 tavily:
-  api-key: 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  # ????????
+  api-key: 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
   mcp-url: https://mcp.tavily.com/mcp/
 
 #grsai:
 #  nanobanana:
-#    api-key: sk-ec99XXXXXXXXXXXXXX # ????????
+#    api-key: sk-ec99XXXXXXXXXXXXXX
 
 logging:
   level:
