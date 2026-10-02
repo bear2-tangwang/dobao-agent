@@ -1,9 +1,10 @@
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import hljs from 'highlight.js'
 import { backendUrl as DEFAULT_BACKEND_URL } from '@/config'
-import { AGENTS, SUPPORTED_FILE_TYPES, STREAM_TYPES } from '@/utils/constants'
+import { AGENTS, SUPPORTED_FILE_TYPES, STREAM_TYPES, AUDIO_EXTENSIONS } from '@/utils/constants'
 import { generateId, formatFileSize } from '@/utils/format'
 import { renderMarkdown, processReferences, processRecommendations } from '@/utils/markdown'
+import { useInterview, createInterviewSession } from '@/composables/useInterview'
 import {
   testConnection as apiTestConnection,
   loadChats as apiLoadChats,
@@ -13,7 +14,7 @@ import {
   streamChat as apiStreamChat,
   stopStream as apiStopStream
 } from '@/api'
-import type { Agent, Chat, Message, StreamPayload } from '@/types'
+import type { Agent, Chat, Message, StreamPayload, InterviewSession } from '@/types'
 
 export function useChat() {
   // ===== 配置和常量 =====
@@ -31,6 +32,35 @@ export function useChat() {
   const isUploading = ref(false)
   const isSending = ref(false)
   const currentRecommendMsgId = ref<string | null>(null)
+
+  // ===== 面试总结（步骤 5） =====
+  // 合规勾选：未勾选不允许提交（需求文档 §6 合规项）
+  const interviewAgreed = ref(false)
+  // 面试模式下选中的录音（不立刻上传，等用户点"开始总结"或面板按钮）
+  const interviewFile = ref<File | null>(null)
+  /**
+   * "待提交"面板（选完文件、还没点开始总结的那条消息）与"正在处理"的消息。
+   *
+   * <p>记的是 **id + 所属会话 id**，不是消息对象：`chatList` 是深度响应式的，
+   * `chat.messages` 里拿到的是 Proxy，把对象存起来再和 `messages` 比对很容易踩到
+   * raw / proxy 不相等的问题。id 比较没有这个歧义。
+   *
+   * <p>一个会话里可能存在多条面试消息（多场面试），因此这里必须区分：
+   * 待提交的那条、正在跑的那条、以及已经出过报告的那些（后者一概不碰）。
+   */
+  const pendingInterviewMsgId = ref<string | null>(null)
+  const pendingInterviewChatId = ref<string | null>(null)
+  const runningInterviewMsgId = ref<string | null>(null)
+
+  /**
+   * 面试进度对象**由每条消息各自持有**（`message.interview`），不再全应用共用一个。
+   *
+   * <p>共用一份会踩坑：一个会话里做第二场面试时 `Object.assign` 会把第一场的报告就地清空，
+   * 第一场的气泡只剩一个空壳（用户看到的"上一场的 AI 气泡消失了，用户气泡还在"）。
+   * 每场一个对象之后，多场面试互不影响；`useInterview` 的每个方法都接收目标 session，
+   * 只就地改字段、从不换对象，所以流式进度照旧实时刷新。
+   */
+  const interview = useInterview(backendUrl)
 
   // 确认对话框状态
   const showConfirmDialog = ref(false)
@@ -113,6 +143,11 @@ export function useChat() {
 
   const selectChat = async (chatId: string) => {
     currentChatId.value = chatId
+    // 待提交的录音属于上一个会话：切走后不该还在输入区挂着 chip
+    // （那条上传卡仍留在原会话里，回去再选文件会被复用）
+    pendingInterviewMsgId.value = null
+    pendingInterviewChatId.value = null
+    interviewFile.value = null
 
     const chat = chatList.value.find(c => c.id === chatId)
     if (chat && chat.isNew) {
@@ -205,19 +240,256 @@ export function useChat() {
     const input = event.target as HTMLInputElement
     const files = input.files
     if (files && files.length > 0) {
-      if (selectedFile.value) {
+      const file = files[0]!
+      const ext = file.name.split('.').pop()?.toLowerCase() || ''
+      // 音频一律走面试链路：即使用户没切到"面试总结"，传录音的意图也是明确的
+      if (AUDIO_EXTENSIONS.includes(ext)) {
+        selectedAgent.value = 'interview'
+        const chat = currentChat.value
+        if (chat) {
+          handleInterviewFile(file, chat)
+        }
+      } else if (selectedAgent.value === 'interview') {
+        alert(`面试总结只接受音频文件（${AUDIO_EXTENSIONS.join(' / ')}），当前文件：.${ext || '未知'}`)
+      } else if (selectedFile.value) {
         alert('已上传文件，请先删除当前文件再上传新文件（限1个）')
-        return
+      } else {
+        await handleFile(file)
       }
-      await handleFile(files[0]!)
     }
     input.value = ''
   }
 
   const removeFile = () => {
+    // 面试模式：清掉待提交的录音与对应的上传卡
+    if (selectedAgent.value === 'interview') {
+      discardPendingInterview()
+      return
+    }
     selectedFile.value = null
     uploadedFileId.value = null
   }
+
+  /**
+   * 丢弃"待提交"面板：把那条消息从会话里摘掉，并清掉挂着的录音。
+   *
+   * <p>只针对**还没开始**的那一场。已经开始处理或已经出过报告的消息一律不碰 ——
+   * 之前的实现会把 `interviewMsg.interview` 置空，于是"上一场的 AI 气泡"变成一个
+   * 只剩复制按钮的空壳（进度和报告一起消失），这正是本次要修的问题。
+   */
+  const discardPendingInterview = () => {
+    const chat = chatList.value.find(c => c.id === pendingInterviewChatId.value)
+    if (chat && pendingInterviewMsgId.value) {
+      const index = chat.messages.findIndex(m => m.id === pendingInterviewMsgId.value)
+      if (index !== -1) {
+        chat.messages.splice(index, 1)
+      }
+    }
+    pendingInterviewMsgId.value = null
+    pendingInterviewChatId.value = null
+    interviewFile.value = null
+  }
+
+  /** 找出某个会话里"待提交"的面试消息（选了文件但还没点开始总结的那条） */
+  const findPendingInterviewMessage = (chat: Chat): Message | undefined =>
+    chat.messages.find(
+      m =>
+        m.interview &&
+        !m.interview.interviewId &&
+        !m.interview.uploading &&
+        !m.interview.errorMsg &&
+        m.interview.steps.length === 0
+    )
+
+  /**
+   * 面试模式：选中录音文件。
+   *
+   * <p>这里刻意**不上传**，只把文件挂起来并点亮"开始总结"按钮 ——
+   * 80MB 的音频传起来要几秒到几十秒，用户点错了想换文件时不该已经花掉一次上传。
+   *
+   * <p>只创建/复用一条"待提交"的上传卡：已经跑起来的、已经出过报告的场次都属于历史，
+   * 不能拿来复用（复用会把上一场的报告就地清空）。真正开始总结时，会在这条消息上
+   * 开一场新的面试，并把它排到用户气泡之后（见 `sendMessage`）。
+   *
+   * @param chat 目标会话（由调用方传入，避免依赖后面才声明的 computed）
+   */
+  const handleInterviewFile = (file: File, chat: Chat) => {
+    interviewFile.value = file
+    // 本会话里已经有待提交的卡：复用它，只换文件名即可
+    const own = chat.messages.find(m => m.id === pendingInterviewMsgId.value)
+    const existing = own ?? findPendingInterviewMessage(chat)
+    if (existing) {
+      pendingInterviewMsgId.value = existing.id
+      pendingInterviewChatId.value = chat.id
+      return
+    }
+    const target = createInterviewMessage()
+    chat.messages.push(target)
+    pendingInterviewMsgId.value = target.id
+    pendingInterviewChatId.value = chat.id
+  }
+
+  /** 弹出录音选择器（给进度面板里的"选择录音文件"用） */
+  const interviewPickFile = () => {
+    document.querySelector<HTMLInputElement>('.input-card input[type="file"]')?.click()
+  }
+
+  /**
+   * 把"开始总结"按钮的点击转成一次正常的发送流程。
+   * 复用 `sendMessage` 的好处是：面试和对话/PPT 走的是同一条入口，
+   * 用户消息、标题、isNew 这些处理不会出现两套。
+   */
+  const interviewStartRequested = () => {
+    void sendMessage()
+  }
+
+  /**
+   * 面板上的"重新选择"：清掉待提交的录音与上传卡，再打开选择器。
+   * 已经开始处理的场次不受影响（那时面板显示的是进度，不是上传卡）。
+   */
+  const interviewReselectRequested = () => {
+    discardPendingInterview()
+    interviewPickFile()
+  }
+
+  /**
+   * 面试进度面板挂在 AI 消息上（复用消息气泡的排版与复制按钮）。
+   *
+   * <p>`interview` 用 `reactive()` 包一层：对象一旦被塞进响应式数组，
+   * 拿原始对象直接改字段是不会触发重渲染的（Vue 只在**通过代理读**的时候才收集依赖），
+   * 这里显式做成代理，谁引用它都是同一份响应式对象。
+   */
+  const createInterviewMessage = (): Message => ({
+    id: generateId(),
+    role: 'assistant',
+    content: '',
+    thinking: [],
+    reference: [],
+    recommend: [],
+    showThinking: false,
+    showReference: false,
+    hasThinking: false,
+    timestamp: Date.now(),
+    interview: reactive(createInterviewSession())
+  })
+
+  /**
+   * 取出这场面试要挂载的面板消息：
+   * 复用"待提交"的那条（带着它自己的 session），否则新建一条。
+   *
+   * <p>顺序很重要：调用方已经把用户气泡 push 进去了，这里必须把面板消息
+   * **挪到最后**，否则会出现"AI 气泡排在用户气泡之前"（选文件时就建卡，
+   * 用户消息是点开始总结时才补上的），也就是用户看到的"气泡排序不对"。
+   */
+  const takeInterviewMessage = (chat: Chat): Message => {
+    const pending = chat.messages.find(m => m.id === pendingInterviewMsgId.value)
+    pendingInterviewMsgId.value = null
+    pendingInterviewChatId.value = null
+
+    const target = pending ?? findPendingInterviewMessage(chat)
+    if (!target) {
+      const created = createInterviewMessage()
+      chat.messages.push(created)
+      return created
+    }
+    if (!target.interview) {
+      target.interview = reactive(createInterviewSession())
+    }
+    const index = chat.messages.indexOf(target)
+    if (index !== -1 && index !== chat.messages.length - 1) {
+      chat.messages.splice(index, 1)
+      chat.messages.push(target)
+    }
+    return target
+  }
+
+  /**
+   * 面试模式：校验 + 上传 + 开始接收进度（进度写进 `target.interview`）。
+   *
+   * <p>是"普通请求上传 → 立刻开 SSE 流"两步，而不是上传本身流式：
+   * multipart 落 MinIO 要 1~3 秒，后端上传接口本身就是同步返回的。
+   */
+  const startInterview = async (target: Message) => {
+    const file = interviewFile.value
+    if (!file) {
+      return
+    }
+    if (!interviewAgreed.value) {
+      alert('请先勾选"我已获得录音中各方的同意"')
+      return
+    }
+    const session = target.interview ?? (target.interview = reactive(createInterviewSession()))
+    // 立刻收走待提交状态：上传期间输入区不该还挂着一个 chip，
+    // 面板也会切到"提交中"，避免"重新选择"把在跑的这场打断
+    interviewFile.value = null
+    runningInterviewMsgId.value = target.id
+    isSending.value = true
+    try {
+      // 进度由 InterviewPanel 直接读这条消息自己的 reactive 对象实时渲染，
+      // 这里 await 到整场结束只是为了控制"处理中"的按钮状态
+      await interview.start(file, session)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (session.stopped) {
+        // 用户自己点的"停止"，请求被 abort 是预期结果，不打扰
+        session.uploading = false
+      } else if (session.interviewId) {
+        // 已经有后端记录：面板里的错误块 + "重试"比弹窗更合适
+        session.errorMsg = session.errorMsg || message
+      } else {
+        // 校验不通过 / 上传失败：连记录都没建起来，面板里没有可重试的东西，直接提示
+        // （不写 errorMsg，这条上传卡保持"待提交"状态，用户可以换一个文件重来）
+        alert('面试总结未开始：' + message)
+      }
+    } finally {
+      isSending.value = false
+      runningInterviewMsgId.value = null
+    }
+  }
+
+  /** 面板上的"重试"（带这一场自己的 session） */
+  const retryInterviewNow = async (session?: InterviewSession) => {
+    if (!session) {
+      return
+    }
+    isSending.value = true
+    try {
+      await interview.retry(session)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      session.errorMsg = message
+    } finally {
+      isSending.value = false
+    }
+  }
+
+  /** 面板上的"载入报告内容"（流断过、或只拿到 reportUrl 时） */
+  const refreshInterviewReport = async (session?: InterviewSession) => {
+    if (!session) {
+      return
+    }
+    isSending.value = true
+    try {
+      await interview.loadReport(session)
+    } finally {
+      isSending.value = false
+    }
+  }
+
+  const toggleInterviewAgree = () => {
+    interviewAgreed.value = !interviewAgreed.value
+  }
+
+  /** 这条消息的面试面板是否真的在处理（只有正在跑的那一场会转圈） */
+  const isInterviewProcessing = (msg: Message): boolean => interview.isProcessing(msg.interview)
+
+  /** 这条消息的面板按钮是否应该禁用（提交中 / 正在处理 / 等待开始） */
+  const isInterviewBusy = (msg: Message): boolean =>
+    isSending.value && (msg.id === runningInterviewMsgId.value || msg.id === pendingInterviewMsgId.value)
+
+  /** 这条消息是不是"待提交"的上传卡（只有它显示已选录音名） */
+  const interviewPendingFileName = (msg: Message): string | null =>
+    msg.id === pendingInterviewMsgId.value ? interviewFile.value?.name ?? null : null
 
   const handleFile = async (file: File) => {
     selectedFile.value = file
@@ -309,6 +581,45 @@ export function useChat() {
 
   const sendMessage = async () => {
     if (isSending.value || isUploading.value) return
+
+    // 面试总结走独立链路：选好录音后点"开始总结"即上传 + 开流
+    if (selectedAgent.value === 'interview') {
+      const chat = currentChat.value
+      if (!chat) {
+        return
+      }
+      if (!interviewFile.value) {
+        alert('请先选择一段面试录音（mp3 / wav / m4a / aac / flac / amr）')
+        return
+      }
+      if (chat.isNew) {
+        chat.isNew = false
+      }
+      if (!chat.title || chat.title === '新对话') {
+        chat.title = interviewFile.value.name.substring(0, 20)
+      }
+      // 把录音以"用户消息"的形式呈现，和对话/PPT 的交互保持一致
+      chat.messages.push({
+        id: generateId(),
+        role: 'user',
+        content: '请总结这段面试录音',
+        file: true,
+        fileName: interviewFile.value.name,
+        thinking: [],
+        reference: [],
+        recommend: [],
+        showThinking: false,
+        showReference: false,
+        hasThinking: false,
+        timestamp: Date.now()
+      })
+      // 先把用户气泡放进列表，再把面试面板取出来排到它后面：
+      // 面板是"选文件"时就建好的（那会儿还没有用户气泡），不挪的话会排在用户气泡之前
+      const target = takeInterviewMessage(chat)
+      await startInterview(target)
+      return
+    }
+
     if (!inputMessage.value.trim() && !selectedFile.value) return
 
     clearAllRecommendQuestions()
@@ -477,6 +788,20 @@ export function useChat() {
   const stopMessage = async () => {
     if (!isSending.value) return
 
+    // 面试模式：停的是 SSE 进度流（后端任务仍在跑，靠轮询/重新进入续上）
+    if (selectedAgent.value === 'interview') {
+      const running = currentChat.value?.messages.find(m => m.id === runningInterviewMsgId.value)
+      interview.stop()
+      if (running?.interview) {
+        // 标记"用户主动停了"：面板不再显示处理中，也不该因为 AbortError 弹一堆提示
+        running.interview.stopped = true
+        running.interview.uploading = false
+      }
+      isSending.value = false
+      runningInterviewMsgId.value = null
+      return
+    }
+
     if (abortController) {
       abortController.abort()
       abortController = null
@@ -492,6 +817,10 @@ export function useChat() {
     if (selectedFile.value) {
       selectedFile.value = null
       uploadedFileId.value = null
+    }
+    // 切换模式时清掉另一个模式挂着的文件，避免"切走了却还带着上一个文件"
+    if (agentId !== 'interview') {
+      discardPendingInterview()
     }
     selectedAgent.value = agentId
   }
@@ -515,6 +844,11 @@ export function useChat() {
   }
 
   const createNewChat = () => {
+    // 新会话：把上一个会话挂着的待提交录音与面板引用清掉
+    pendingInterviewMsgId.value = null
+    pendingInterviewChatId.value = null
+    interviewFile.value = null
+
     const existingNewChat = chatList.value.find(c => c.isNew)
     if (existingNewChat) {
       currentChatId.value = existingNewChat.id
@@ -578,6 +912,10 @@ export function useChat() {
   const canSend = computed(() => {
     if (isSending.value) return false
     if (isUploading.value) return false
+    // 面试模式：要有录音 + 勾了合规同意才能提交
+    if (selectedAgent.value === 'interview') {
+      return !!interviewFile.value && interviewAgreed.value
+    }
     return inputMessage.value.trim().length > 0 || !!selectedFile.value
   })
 
@@ -627,6 +965,18 @@ export function useChat() {
     confirmMessage,
     confirmOk,
     confirmCancel,
+    // 面试总结（步骤 5）
+    interviewAgreed,
+    interviewFile,
+    // 每条面试消息各自持有 session，所以"是否在跑/是否忙/待提交的文件名"都要按消息算
+    isInterviewProcessing,
+    isInterviewBusy,
+    interviewPendingFileName,
+    toggleInterviewAgree,
+    interviewStartRequested,
+    interviewReselectRequested,
+    retryInterviewNow,
+    refreshInterviewReport,
     // 供模板直接使用的工具函数
     renderMarkdown,
     formatFileSize

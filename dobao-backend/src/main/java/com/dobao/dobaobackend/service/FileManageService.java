@@ -165,6 +165,10 @@ public class FileManageService {
                     fileInfoService.updateFileInfo(fileInfo);
                     throw new RuntimeException("图片识别失败: " + e.getMessage(), e);
                 }
+            } else if (isAudioFile(fileType)) {
+                // 音频文件（面试录音）：只落 MinIO + 建记录，不解析文本，转写交给 InterviewService 异步处理。
+                // 关键：这里绝不做耗时动作，否则上传接口无法在 3 秒内返回。
+                log.info("音频文件上传完成，等待转写: fileId={}, 类型: {}", fileId, fileType);
             } else {
                 // 其他文件类型：标记为成功，不进行额外处理
                 log.info("其他类型文件上传完成: fileId={}, 类型: {}", fileId, fileType);
@@ -392,6 +396,17 @@ public class FileManageService {
                 "png".equalsIgnoreCase(fileType) ||
                 "gif".equalsIgnoreCase(fileType) ||
                 "bmp".equalsIgnoreCase(fileType));
+    }
+
+    /**
+     * 判断是否为音频文件（面试录音）。
+     *
+     * <p>复用 {@link FileInfo#isAudioType(String)}，保证"支持哪些音频格式"只有一处定义。
+     * 注意：这个方法必须与 {@link FileInfo#isAudio()} 一起存在，只加实体侧的方法是没用的——
+     * 上面的类型分支用的是本类的私有方法。
+     */
+    private boolean isAudioFile(String fileType) {
+        return FileInfo.isAudioType(fileType);
     }
 
     /**

@@ -1,5 +1,11 @@
 import { STREAM_TYPES } from '@/utils/constants'
-import type { SessionDetail, Reference } from '@/types'
+import type {
+  SessionDetail,
+  Reference,
+  InterviewUploadVo,
+  InterviewStatusVo,
+  InterviewReport
+} from '@/types'
 
 /** Test backend connection */
 export const testConnection = async (backendUrl: string): Promise<{ success: boolean; error?: string }> => {
@@ -184,6 +190,138 @@ export const stopStream = async (backendUrl: string, conversationId: string) => 
     console.warn('调用停止接口失败:', error)
     return null
   }
+}
+
+// ==================== 面试总结（步骤 5） ====================
+
+/** 后端统一返回包装（与 BaseResult 对应） */
+interface ApiResult<T> {
+  code: number
+  message?: string
+  data?: T
+}
+
+/** 拆统一返回：code 非 200 视为业务错误，抛出 message */
+const unwrap = <T>(result: ApiResult<T>, fallback: string): T => {
+  if (result.code === 200 || result.code === 0) {
+    if (result.data === undefined || result.data === null) {
+      throw new Error(fallback + '：返回数据为空')
+    }
+    return result.data
+  }
+  throw new Error(result.message || fallback)
+}
+
+/**
+ * 上传面试录音。
+ *
+ * 注意这里是**普通请求**而不是流式：multipart 落 MinIO 本身就要 1~3 秒，
+ * 上传成功后前端立刻去开 SSE 流（见 `streamInterview`）。
+ */
+export const uploadInterviewAudio = async (
+  backendUrl: string,
+  file: File,
+  signal?: AbortSignal
+): Promise<InterviewUploadVo> => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${backendUrl}/interview/upload`, {
+    method: 'POST',
+    body: formData,
+    signal
+  })
+  if (!response.ok) {
+    throw new Error(`音频上传失败（HTTP ${response.status}）`)
+  }
+  const result = (await response.json()) as ApiResult<InterviewUploadVo>
+  return unwrap(result, '音频上传失败')
+}
+
+/** 面试总结 SSE 流地址 */
+export const getInterviewStreamUrl = (backendUrl: string, interviewId: string): string =>
+  `${backendUrl}/interview/${encodeURIComponent(interviewId)}/stream`
+
+/** 查询面试处理状态（断流兜底 / 刷新页面恢复） */
+export const getInterviewStatus = async (
+  backendUrl: string,
+  interviewId: string,
+  signal?: AbortSignal
+): Promise<InterviewStatusVo> => {
+  const response = await fetch(`${backendUrl}/interview/${encodeURIComponent(interviewId)}/status`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal
+  })
+  if (!response.ok) {
+    throw new Error(`查询状态失败（HTTP ${response.status}）`)
+  }
+  const result = (await response.json()) as ApiResult<InterviewStatusVo>
+  return unwrap(result, '查询状态失败')
+}
+
+/** 取结构化报告 */
+export const getInterviewReport = async (
+  backendUrl: string,
+  interviewId: string,
+  signal?: AbortSignal
+): Promise<InterviewReport> => {
+  const response = await fetch(`${backendUrl}/interview/${encodeURIComponent(interviewId)}/report`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal
+  })
+  if (!response.ok) {
+    throw new Error(`获取报告失败（HTTP ${response.status}）`)
+  }
+  const result = (await response.json()) as ApiResult<InterviewReport>
+  return unwrap(result, '获取报告失败')
+}
+
+/** 报告 Markdown 下载地址（走浏览器原生下载） */
+export const getInterviewDownloadUrl = (backendUrl: string, interviewId: string): string =>
+  `${backendUrl}/interview/${encodeURIComponent(interviewId)}/report/download`
+
+/** 重试：有文字稿只重跑分析，否则重新提交转写 */
+export const retryInterview = async (backendUrl: string, interviewId: string): Promise<void> => {
+  const response = await fetch(`${backendUrl}/interview/${encodeURIComponent(interviewId)}/retry`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' }
+  })
+  if (!response.ok) {
+    throw new Error(`重试失败（HTTP ${response.status}）`)
+  }
+  const result = (await response.json()) as ApiResult<string>
+  unwrap(result, '重试失败')
+}
+
+/**
+ * 发起面试总结 SSE 流。
+ *
+ * 与 `streamChat` 的区别：后端用的是**具名事件**（`event: xxx` + `data: {...}`），
+ * 所以这里只负责把字节流交给调用方，解析交给 `useInterview`。
+ */
+export const streamInterview = async (
+  backendUrl: string,
+  interviewId: string,
+  signal?: AbortSignal
+): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; response: Response }> => {
+  const response = await fetch(getInterviewStreamUrl(backendUrl, interviewId), {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive'
+    },
+    signal
+  })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  if (!response.body) {
+    throw new Error('流式响应无 body')
+  }
+  return { reader: response.body.getReader(), response }
 }
 
 // Keep STREAM_TYPES export

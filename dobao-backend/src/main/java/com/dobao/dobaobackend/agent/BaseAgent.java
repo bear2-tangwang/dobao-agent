@@ -143,8 +143,10 @@ public abstract class BaseAgent {
                     chatMemory.add(sessionId, new AssistantMessage(record.getAnswer()));
                 }
             }
-            log.debug("加载会话历史: sessionId={}, recordCount={}", sessionId, history.size());
+            log.info("加载会话历史: sessionId={}, recordCount={}", sessionId, history.size());
         }
+
+
 
         return chatMemory;
     }
@@ -216,7 +218,7 @@ public abstract class BaseAgent {
     protected void recordFirstResponse() {
         if (firstResponseTime == 0 && startTime > 0) {
             firstResponseTime = System.currentTimeMillis() - startTime;
-            log.debug("记录首次响应时间: {}ms", firstResponseTime);
+            log.info("记录首次响应时间: {}ms", firstResponseTime);
         }
     }
 
@@ -410,7 +412,7 @@ public abstract class BaseAgent {
         if (sessionService != null) {
             boolean result = sessionService.updateAnswer(request);
             if (result) {
-                log.debug("保存会话结果: sessionId={}, answerLength={}", request.getId(), request.getAnswer().length());
+                log.info("保存会话结果: sessionId={}, answerLength={}", request.getId(), request.getAnswer().length());
             }
             return result;
         }

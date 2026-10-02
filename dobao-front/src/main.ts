@@ -1,4 +1,5 @@
 import './style.css'
+import './styles/interview.css'
 import '@fortawesome/fontawesome-free/css/all.min.css'
 
 import { createApp } from 'vue'

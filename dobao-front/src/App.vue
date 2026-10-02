@@ -41,7 +41,18 @@ const {
   confirmTitle,
   confirmMessage,
   confirmOk,
-  confirmCancel
+  confirmCancel,
+  // 面试总结（步骤 5）
+  interviewAgreed,
+  interviewFile,
+  isInterviewProcessing,
+  isInterviewBusy,
+  interviewPendingFileName,
+  toggleInterviewAgree,
+  interviewStartRequested,
+  interviewReselectRequested,
+  retryInterviewNow,
+  refreshInterviewReport
 } = useChat()
 
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null)
@@ -82,15 +93,24 @@ const handleQuickPrompt = (prompt: string) => {
         <EmptyState v-if="currentChat && currentChat.messages.length === 0" @quick-prompt="handleQuickPrompt" />
 
         <MessageItem
-          v-for="(msg, index) in currentChat?.messages || []"
-          :key="index"
+          v-for="msg in currentChat?.messages || []"
+          :key="msg.id"
           :msg="msg"
           :is-sending="isSending"
           :is-last="isLastMessage(msg)"
+          :interview-processing="isInterviewProcessing(msg)"
+          :interview-loading="isInterviewBusy(msg)"
+          :interview-agreed="interviewAgreed"
+          :interview-pending-file-name="interviewPendingFileName(msg)"
           @copy="copyMessage"
           @toggle-thinking="toggleThinking"
           @toggle-reference="toggleReference"
           @send-recommend="sendRecommendQuestion"
+          @interview-toggle-agree="toggleInterviewAgree"
+          @interview-pick-file="interviewReselectRequested"
+          @interview-start="interviewStartRequested"
+          @interview-retry="retryInterviewNow"
+          @interview-refresh-report="refreshInterviewReport"
         />
       </div>
 
@@ -104,6 +124,7 @@ const handleQuickPrompt = (prompt: string) => {
         :input-message="inputMessage"
         :can-send="canSend"
         :is-sending="isSending"
+        :interview-file="interviewFile"
         @update:input-message="inputMessage = $event"
         @select-agent="selectAgent"
         @handle-file-select="handleFileSelect"

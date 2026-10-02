@@ -1,0 +1,371 @@
+/*
+ * 面试总结（编码方案步骤 5）的样式。
+ *
+ * 单独一份文件而不是追加进 style.css：既有样式文件是整份的深色主题，
+ * 面试面板是后加的一块独立 UI，放一起会让 style.css 越来越难维护。
+ * 变量沿用 style.css 里 :root 定义的主题色，观感与对话/PPT 保持一致。
+ */
+
+/* ==================== 进度面板整体 ==================== */
+
+.interview-panel {
+    width: 100%;
+}
+
+/* ==================== 上传卡 ==================== */
+
+/* 提交中：上传接口还没返回，先给个明确的等待态，别又露出一张上传卡 */
+.interview-uploading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    background: rgba(139, 92, 246, 0.08);
+    max-width: 620px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.interview-uploading i {
+    color: var(--primary-light);
+}
+
+.interview-uploading-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.interview-upload {
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 20px 22px;
+    background: rgba(139, 92, 246, 0.06);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 620px;
+}
+
+.interview-upload-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+    box-shadow: 0 6px 18px rgba(139, 92, 246, 0.35);
+}
+
+.interview-upload-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.interview-upload-desc {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+
+/* 已选录音（未提交） */
+.interview-pending {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.interview-pending i {
+    color: var(--accent-light);
+}
+
+.interview-pending-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.interview-change-btn {
+    border: none;
+    background: transparent;
+    color: var(--accent-light);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
+.interview-change-btn:hover {
+    background: rgba(6, 182, 212, 0.15);
+}
+
+/* 合规勾选（需求文档 §6：未勾选不可提交） */
+.interview-consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.interview-consent input {
+    margin-top: 2px;
+    width: 15px;
+    height: 15px;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
+.interview-consent.checked span {
+    color: var(--text-primary);
+}
+
+.interview-consent-hint {
+    font-size: 12px;
+    color: var(--warning-color);
+}
+
+/* 主按钮 */
+.interview-pick-btn {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: rgba(139, 92, 246, 0.14);
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.interview-pick-btn:hover:not(:disabled) {
+    background: rgba(139, 92, 246, 0.26);
+    transform: translateY(-1px);
+}
+
+.interview-pick-btn.primary {
+    background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
+    border-color: transparent;
+    box-shadow: 0 6px 18px rgba(139, 92, 246, 0.35);
+}
+
+.interview-pick-btn.primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+}
+
+.interview-pick-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* ==================== 进度区 ==================== */
+
+.interview-progress {
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 16px 18px;
+    background: rgba(15, 23, 42, 0.55);
+    max-width: 680px;
+}
+
+.interview-progress-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.interview-progress-head i {
+    color: var(--accent-light);
+}
+
+.interview-file-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.interview-file-size {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* 步骤时间线 */
+.interview-steps {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.interview-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.interview-step-icon {
+    flex: 0 0 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.interview-step.done {
+    color: var(--text-primary);
+}
+
+.interview-step.done .interview-step-icon {
+    color: var(--success-color);
+}
+
+.interview-step.active {
+    color: var(--text-primary);
+}
+
+.interview-step.active .interview-step-icon {
+    color: var(--primary-light);
+}
+
+.interview-step.error {
+    color: #fca5a5;
+}
+
+.interview-step.error .interview-step-icon {
+    color: #ef4444;
+}
+
+.interview-step-text {
+    flex: 1;
+}
+
+/* 处理中提示 / 降级提示 / 错误 */
+.interview-tip,
+.interview-warn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    font-size: 12.5px;
+    line-height: 1.6;
+}
+
+.interview-tip {
+    background: rgba(139, 92, 246, 0.12);
+    color: var(--primary-light);
+}
+
+.interview-warn {
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--warning-color);
+}
+
+.interview-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+    padding: 10px 12px;
+    border-radius: 9px;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.interview-error-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #fca5a5;
+}
+
+.interview-retry-btn,
+.interview-report-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(139, 92, 246, 0.16);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s ease;
+}
+
+.interview-retry-btn:hover,
+.interview-report-btn:hover:not(:disabled) {
+    background: rgba(139, 92, 246, 0.3);
+}
+
+.interview-report-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.interview-report-actions {
+    margin-top: 14px;
+}
+
+/* 报告正文：与对话消息的 markdown 排版保持一致的间距 */
+.interview-report {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+/* ==================== 输入区的面试引导行 ==================== */
+
+.interview-input-notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 2px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.interview-input-notice i {
+    color: var(--accent-light);
+}

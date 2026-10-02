@@ -16,7 +16,7 @@ spring:
         options:
           model: qwen3.8-2.4t-a95b
           temperature: 0.7
-          maxTokens: 5000
+          maxTokens: 10000
 
       embedding:
         #        base-url: https://dashscope.aliyuncs.com/compatible-mode/
@@ -45,8 +45,8 @@ spring:
   servlet:
     multipart:
       enabled: true
-      max-file-size: 50MB
-      max-request-size: 50MB
+      max-file-size: 80MB
+      max-request-size: 80MB
 
 minio:
   url: http://127.0.0.1:9000/
@@ -54,6 +54,56 @@ minio:
   secretKey: admin@123456
   bucketName: dobao-agent
   endpoint: http://127.0.0.1:9000/
+  # 生产环境对外可达的 MinIO 域名（MinioPublicUrlProvider 使用）。
+  # dev 留空即可：dev 走百炼临时文件上传，不需要公网域名。
+  public-base-url: ${MINIO_PUBLIC_BASE_URL:}
+
+# 面试总结功能（docs/interview-summary-coding-plan.md 步骤 1）
+interview:
+  asr:
+    # 必须带 /api/v1：步骤 0 实测可用的地址就是这一形式，
+    # 缺了它 /uploads、/services/audio/asr/transcription、/tasks/{id} 三个端点全部 404。
+    base-url: ${DASHSCOPE_ASR_BASE_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1}
+    # 优先读环境变量，未设置时回退到项目现有百炼 Key（与 spring.ai.openai 同源）。
+    # 不要写成 ${DASHSCOPE_API_KEY}：占位符无法解析会让整个应用启动失败。
+    api-key: ${DASHSCOPE_API_KEY:${spring.ai.openai.api-key}}
+    model: qwen-audio-3.1-asr-flash-filetrans
+    # 轮询间隔（毫秒）。由 InterviewTaskService#pollTranscribingTasks 的 @Scheduled
+    # 占位符直接读取，因此 InterviewProperties 里没有对应字段。
+    poll-interval-ms: 5000
+    # 30 分钟兜底（步骤 6 要求）。轮询不占用 interviewExecutor 线程，
+    # 由 @Scheduled 扫描 status=TRANSCRIBING 的记录驱动，详见 config/AsyncConfig.java。
+    poll-timeout-ms: 1800000
+    # true=dev：走百炼临时文件上传（本地开发无需公网域名）；false=prod：走 MinIO 公网地址。
+    # 这是 dev/prod 的唯一切换开关（application-dev.yml / application-prod.yml 目前为空文件）。
+    temp-upload-enabled: true
+    max-audio-bytes: 83886080        # 80MB，与 spring.servlet.multipart.max-file-size 对齐
+    max-audio-duration-ms: 5400000   # 1.5 小时（模型本身支持 12 小时，这是产品侧约束）
+  report:
+    # 2026-10 重构：分块抽取已整体移除，问答清单由转写句子列表直接格式化（QaListBuilder，零 LLM），
+    # 因此 max-questions-per-chunk / extraction-concurrency 两个旋钮已无作用对象，配置一并删除。
+    # 本配置块现在只服务于"知识点 + 待补充知识点"那一次归纳调用。
+    # 归纳调用固定种子（配合低温保证"同一份问答清单同一份知识点"，需求 AC-13）
+    seed: 42
+    # 透传给归纳请求体的厂商扩展参数。enable_thinking=false 用于关掉推理模型的"思考"：
+    # 实测同一 prompt 下 completion 从 8064 token 降到 5075（省 37%）、耗时从 >150s 降到约 120s。
+    # 不同服务商/模型的参数名不同，所以做成配置；写错通常表现为请求被拒，此时删掉这项即可恢复。
+    extra-body:
+      enable_thinking: false
+    # 上面 extra-body 里真正下发到归纳调用的键。
+    # 不加白名单的话，"关思考"会顺带应用到对话 / PPT 那条链路（它们共用同一个 ChatModel）。
+    extra-body-keys:
+      - enable_thinking
+    # 归纳专用模型（留空=沿用全局 spring.ai.openai.chat.options.model）。
+    # 归纳是信息抽取任务，换更快的非推理模型可以直接省掉"思考" token。
+    # model: qwen-plus
+  # 实时进度流（SSE，GET /interview/{id}/stream）。
+  # 心跳间隔同样由 InterviewProgressHub#heartbeat 的 @Scheduled 占位符直接读取，
+  # 因此 InterviewProperties 里没有对应字段：转写阶段可能几分钟没有状态跳变，
+  # 靠 ": ping" 注释帧保住长连接
+  # （前端解析时忽略注释行；流断了也会自动降级为轮询，两条通道共用同一份状态）
+  stream:
+    heartbeat-ms: 15000
 
 # Qwen 文生图（ImageGenerationService 使用）
 qwen:

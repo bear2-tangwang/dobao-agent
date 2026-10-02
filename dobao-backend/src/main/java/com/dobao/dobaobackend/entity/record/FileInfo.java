@@ -111,6 +111,31 @@ public class FileInfo {
     }
 
     /**
+     * 判断文件是否为音频（面试录音）
+     * 与 docs/interview-summary-final-spec.md §41 定义的格式一致
+     */
+    public boolean isAudio() {
+        return isAudioType(fileType);
+    }
+
+    /**
+     * 判断给定扩展名是否为受支持的音频类型。
+     *
+     * <p>抽成静态方法是为了让"支持哪些音频格式"只有一处定义：实体侧 {@link #isAudio()} 与
+     * 面试上传校验（{@code InterviewService}）共用它，避免两处清单漂移。
+     *
+     * @param fileType 扩展名（不含点），可为 null
+     */
+    public static boolean isAudioType(String fileType) {
+        return ("mp3".equalsIgnoreCase(fileType)
+                || "wav".equalsIgnoreCase(fileType)
+                || "m4a".equalsIgnoreCase(fileType)
+                || "aac".equalsIgnoreCase(fileType)
+                || "flac".equalsIgnoreCase(fileType)
+                || "amr".equalsIgnoreCase(fileType));
+    }
+
+    /**
      * 判断文件是否为PDF
      */
     public boolean isPdf() {
