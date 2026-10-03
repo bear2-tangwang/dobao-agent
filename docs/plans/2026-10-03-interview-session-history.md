@@ -28,11 +28,25 @@
 
 ## 执行状态
 
+**执行顺序（2026-10-03 用户调整）**：`1 → 2 → 3 → 7 → 4 → 8 → 5 → 6 → 9`。
+先把"前端传 conversationId（7）→ 读取侧给 interviewId（4）→ 历史回放接线（8）"做出来，让页面上最早能看到"面试会话出现在列表、点开能还原报告"；
+再收尾列表分页修正（5）与删除级联（6）。**代价**：Task 5 之前，同一会话多场面试时列表的数量与 total 会不准（已在下面各任务里注明）。
+
 | 任务 | 状态 | 提交 |
 |---|---|---|
 | 前置：测试依赖 | ✅ | `2869951` |
-| Task 1 面试会话写入器 | ✅ 规范审查 PASS + 质量审查整改后复审中 | `27e1845` → `ecb9df5` |
-| Task 2 ~ Task 9 | ⏳ | |
+| Task 1 面试会话写入器 | ✅ 规范 PASS + 质量 APPROVE（5 条 Important 整改后复审 5/5 变异被杀死） | `27e1845` → `ecb9df5` → `162e83b` |
+| Task 2 上传即写会话行 | ✅ 实现完成（3 用例绿 + 13 用例回归绿）；**规范/质量审查待补** | `ff5b902` |
+| Task 3 异步回填摘要 | ⏳ 实现完成（4 用例绿 + 18 用例回归绿）；质量审查中；**提交压后**（见下） | 未提交 |
+| Task 7 前端带 conversationId | ⏳ 进行中 | 未提交 |
+| Task 4 / 5 / 6 / 8 / 9 | ⏳ | |
+
+**为什么 Task 3 与前端任务的提交压后**：工作区里有一批**上一轮未提交的重构**（工作区版 `InterviewReport` 是新结构 `qaList/referenceAnswers/summary`，HEAD 还是旧的 `knowledgeTopics/transcript`；另有 `InterviewProgressHub`、`InterviewTaskService`、`useInterview.ts`、`types/index.ts` 等）。
+用户明确"先不提交"这批改动，因此：
+- Task 3 若此刻提交，其补丁引用 `report.referenceAnswers()`，在 HEAD 上编译不过 → 会产出坏提交，故**实现与测试照做，提交压后**；
+- Task 7/8 的文件（`useInterview.ts`/`useChat.ts`）混着同一批未提交改动，同样只改工作区、不提交；
+- Task 4/5/6 要碰的 `SessionController`/`MessageVO`/`MinioService` 在 HEAD 上**是干净的**，可以正常逐任务提交。
+等基线落地后，Task 3 应以**整文件**提交（那时同文件内的无关 hunk 已随基线提交，不会再被带走）。
 
 **⚠️ 验证方式的例外（需要你知情）**：Task 7 / Task 8 是前端改动，仓库里没有测试框架。本计划**不引入 vitest**（那会把一个"接上历史"的需求膨胀成"搭一套前端测试基建"）。这两个任务的验证方式是 `npm run type-check` + Task 9 的浏览器手工验收。若你希望引入前端测试框架，请在开始前告知，我会把 Task 7/8 改写成 TDD 形式。
 
