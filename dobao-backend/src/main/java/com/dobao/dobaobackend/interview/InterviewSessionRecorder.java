@@ -48,32 +48,40 @@ public class InterviewSessionRecorder {
     /**
      * 记录"某会话里开始了某场面试"。幂等：同一 (会话, 面试) 只保留一行。
      *
-     * @param conversationId 前端会话ID；为空表示老调用方，退化为"只写 ai_interview"
+     * <p>会话ID在入口统一 {@code trim()}（见下方注释）：这是本需求唯一的会话行写入点，
+     * 收口在这里不会漏；trim 后为空则退化为"只写 ai_interview"。
+     *
+     * @param conversationId 前端会话ID；为空（或空白）表示老调用方，退化为"只写 ai_interview"
      */
     public void recordUploaded(String conversationId, String interviewId, String fileName) {
-        if (!StringUtils.hasText(conversationId) || !StringUtils.hasText(interviewId)) {
+        // 入口先 trim：带首尾空白的 id（例如 " conv-1 "）能通过 hasText，但原样写进
+        // ai_session.session_id 后与 chat 行的 session_id 不一致 —— 前端按 conversationId
+        // 取会话详情会查不到这行，用户看到一个永远点不开的"幽灵会话"。
+        // 查重（find）与写入（saveQuestion）都必须用 trim 后的值，否则同一会话重复上传会绕过幂等。
+        String sessionId = conversationId == null ? null : conversationId.trim();
+        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(interviewId)) {
             log.info("缺少会话ID或面试ID，跳过会话记录: conversationId={}, interviewId={}",
                     conversationId, interviewId);
             return;
         }
-        AiSession existing = find(conversationId, interviewId);
+        AiSession existing = find(sessionId, interviewId);
         if (existing != null) {
             // 同一会话重复提交同一段录音（音频哈希幂等命中）：只把这场顶到列表最前。
             // 列级更新（不是整行写回），避免把读到的旧 answer 一起覆盖回去。
             sessionService.update(new LambdaUpdateWrapper<AiSession>()
                     .eq(AiSession::getId, existing.getId())
                     .set(AiSession::getUpdateTime, LocalDateTime.now()));
-            log.info("面试会话已存在，仅刷新时间: conversationId={}, interviewId={}", conversationId, interviewId);
+            log.info("面试会话已存在，仅刷新时间: conversationId={}, interviewId={}", sessionId, interviewId);
             return;
         }
         sessionService.saveQuestion(SaveQuestionRequest.builder()
-                .sessionId(conversationId)
+                .sessionId(sessionId)
                 .question(StringUtils.hasText(fileName) ? fileName : interviewId)
                 .fileid(interviewId)
                 .agentType(AGENT_TYPE)
                 .build());
         log.info("面试会话已创建: conversationId={}, interviewId={}, fileName={}",
-                conversationId, interviewId, fileName);
+                sessionId, interviewId, fileName);
     }
 
     /** 处理中：把上一次留下的失败摘要换掉（重试时用） */

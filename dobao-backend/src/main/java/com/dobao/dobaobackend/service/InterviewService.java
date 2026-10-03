@@ -69,6 +69,12 @@ public class InterviewService {
      * {@code ai_session}（见 {@link InterviewSessionRecorder}）。<b>幂等命中的分支也要写</b>——
      * 否则把已上传过的录音传到另一个会话里，那个会话永远不会出现这场面试。
      *
+     * <p><b>已知代价（刻意取舍）</b>：会话行与 {@code ai_interview} 同事务，会话行写入失败会
+     * 整体回滚，但 MinIO 上已上传的音频对象不参与回滚（落盘发生在
+     * {@link FileManageService#uploadFile} 内部、事务之外），因此这种回滚会留下一个
+     * 没有任何 DB 引用的孤儿对象。相比"上传成功却查不到记录"，这里选择让 DB 保持一致，
+     * 孤儿对象由 MinIO 生命周期策略与后续清理任务兜底。
+     *
      * @param conversationId 前端会话ID（可选；为空时退化为"只写 ai_interview"）
      * @param file           上传的音频（mp3/wav/m4a/aac/flac/amr，≤80MB）
      * @return 上传结果（含 interviewId）

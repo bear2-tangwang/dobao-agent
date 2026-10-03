@@ -105,6 +105,38 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
+    @DisplayName("conversationId 带首尾空白：入口就 trim，落库与查重都用 trim 后的值（否则写出前端点不开的幽灵会话）")
+    void recordUploaded_trimsConversationId() {
+        when(sessionService.getOne(any())).thenReturn(null);
+
+        recorder.recordUploaded("  conv-1  ", "iv-1", "interView.m4a");
+
+        ArgumentCaptor<SaveQuestionRequest> captor = ArgumentCaptor.forClass(SaveQuestionRequest.class);
+        verify(sessionService).saveQuestion(captor.capture());
+        assertEquals("conv-1", captor.getValue().getSessionId(),
+                "session_id 必须与 chat 行的会话 id 逐字符一致，否则前端永远点不开这场面试");
+
+        // 查重（getOne）也必须用 trim 后的值：否则同一会话重复上传会绕过幂等，插出第二行
+        ArgumentCaptor<Wrapper<AiSession>> queryCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(sessionService).getOne(queryCaptor.capture());
+        Wrapper<AiSession> query = queryCaptor.getValue();
+        // MyBatis-Plus 3.5.x 的参数是惰性绑定的（ISqlSegment lambda），先取 SQL 才能读到参数表
+        String querySql = query.getTargetSql();
+        assertTrue(querySql.contains("session_id"), "查重条件必须按 session_id 定位，实际: " + querySql);
+        Map<String, Object> params = paramValues(query);
+        assertTrue(params.containsValue("conv-1"), "查重条件应绑定 trim 后的会话ID，实际: " + params);
+        assertFalse(params.containsValue("  conv-1  "), "不能把带空白的原值写进 SQL，实际: " + params);
+    }
+
+    @Test
+    @DisplayName("conversationId 只有空白：trim 后退化，不碰会话表")
+    void recordUploaded_blankConversationId_doesNothing() {
+        recorder.recordUploaded("   ", "iv-1", "interView.m4a");
+
+        verifyNoInteractions(sessionService);
+    }
+
+    @Test
     @DisplayName("回填完成摘要：一条批量 UPDATE 按 agent_type + fileid 定位，写完整文案")
     void markReady_writesSummary() {
         when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
