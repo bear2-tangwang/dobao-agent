@@ -109,9 +109,10 @@ public class PPTBuilderAgent extends BaseAgent {
             // 2. 保存对话
             if (sessionService != null) {
                 AiSession savedSession = sessionService.saveQuestion(
-                        SaveQuestionRequest.builder()
+                        saveQuestionBuilder()
                                 .sessionId(conversationId)
                                 .question(query)
+                                .agentType(agentType)
                                 .build()
                 );
                 currentSessionId = savedSession.getId();

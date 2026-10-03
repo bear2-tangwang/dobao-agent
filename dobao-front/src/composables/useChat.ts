@@ -281,7 +281,7 @@ export function useChat() {
           }
         }
       } else {
-        alert('删除失败: ' + (result.message || result.error || '未知错误'))
+        alert('删除失败: ' + (result.message || '未知错误'))
       }
       showConfirmDialog.value = false
     }

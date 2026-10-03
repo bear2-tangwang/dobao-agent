@@ -2,8 +2,10 @@ package com.dobao.dobaobackend.agent;
 
 
 import com.alibaba.fastjson2.JSON;
+import com.dobao.dobaobackend.auth.UserContext;
 import com.dobao.dobaobackend.common.AgentResponse;
 import com.dobao.dobaobackend.entity.AiSession;
+import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
 import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.prompts.ReactAgentPrompts;
 import com.dobao.dobaobackend.service.AgentTaskManager;
@@ -50,6 +52,16 @@ public abstract class BaseAgent {
     protected String currentConversationId;
     protected String currentQuestion;
     protected String currentRecommendations;
+
+    /**
+     * 本次请求归属的用户。
+     *
+     * <p><b>为什么用字段而不是读 {@code UserContext}</b>：Agent 的业务逻辑跑在
+     * Reactor / Agent 线程池上（SSE 一旦返回 Flux，Tomcat 请求线程就释放了），
+     * ThreadLocal 在那里必然是 null。所以在 AgentController 构造 Agent 时
+     * 显式注入一次，后续一律读这个字段。
+     */
+    protected String defaultUserId;
 
     /**
      * 构造函数
@@ -122,8 +134,9 @@ public abstract class BaseAgent {
             return MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
         }
 
-        // 查询数据库中的对话历史
-        List<AiSession> history = sessionService.findRecentBySessionId(sessionId, maxMessages);
+        // 查询数据库中的对话历史（按归属用户过滤：会话ID是前端生成的，不加这一层
+        // 就等于"知道别人的 conversationId 就能把别人的对话读成自己的记忆"）
+        List<AiSession> history = sessionService.findRecentBySessionId(sessionId, maxMessages, resolveUserId());
 
         // 创建 ChatMemory
         ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
@@ -143,7 +156,7 @@ public abstract class BaseAgent {
                     chatMemory.add(sessionId, new AssistantMessage(record.getAnswer()));
                 }
             }
-            log.info("加载会话历史: sessionId={}, recordCount={}", sessionId, history.size());
+            log.info("加载会话历史: sessionId={}, userId={}, recordCount={}", sessionId, resolveUserId(), history.size());
         }
 
 
@@ -423,6 +436,42 @@ public abstract class BaseAgent {
 
     public void setChatMemory(ChatMemory chatMemory) {
         this.chatMemory = chatMemory;
+    }
+
+    /**
+     * 注入本次请求归属的用户（由 AgentController 在构造 Agent 后立刻调用）。
+     */
+    public void setDefaultUserId(String defaultUserId) {
+        this.defaultUserId = defaultUserId;
+    }
+
+    /**
+     * 取归属用户：字段优先，字段为空时回退到兜底用户。
+     *
+     * <p>回退到 {@code UserContext} 只是"在请求线程里顺带用得上"的兜底，
+     * 不构成对 ThreadLocal 的依赖。
+     */
+    protected String resolveUserId() {
+        if (defaultUserId != null && !defaultUserId.isEmpty()) {
+            return defaultUserId;
+        }
+        return UserContext.getUserIdOrDefault(propertiesDefaultUserId());
+    }
+
+    /**
+     * 兜底用户由配置项 {@code github.oauth.default-user-id} 决定，
+     * Agent 里拿不到 Spring 配置，因此与各业务表 {@code user_id} 列的
+     * DEFAULT 'default' 保持一致（改配置时需要同时改这里与建表默认值）。
+     */
+    private String propertiesDefaultUserId() {
+        return "default";
+    }
+
+    /**
+     * 构造带归属用户的"保存提问"请求，避免三处 Agent 各写一遍。
+     */
+    protected SaveQuestionRequest.SaveQuestionRequestBuilder saveQuestionBuilder() {
+        return SaveQuestionRequest.builder().userId(resolveUserId());
     }
 
     public void setSessionService(AiSessionService sessionService) {

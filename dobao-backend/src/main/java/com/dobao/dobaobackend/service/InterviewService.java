@@ -1,6 +1,8 @@
 package com.dobao.dobaobackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.dobao.dobaobackend.auth.UserContext;
+import com.dobao.dobaobackend.config.GithubOAuthProperties;
 import com.dobao.dobaobackend.config.InterviewProperties;
 import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.AiSession;
@@ -44,7 +46,10 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class InterviewService {
 
-    /** 本期没有登录体系，用户标识写占位值（规格 §7.1） */
+    /**
+     * 未登录/无上下文时的兜底用户，与各表 user_id 列的 DEFAULT 'default' 保持一致。
+     * 正常情况下由 {@code github.oauth.default-user-id} 配置提供（见 {@link #currentUserId()}）。
+     */
     private static final String DEFAULT_USER_ID = "default";
 
     /** 文件名没有可识别扩展名时的占位类型 */
@@ -61,6 +66,17 @@ public class InterviewService {
     private final ObjectMapper objectMapper;
     private final InterviewSessionRecorder sessionRecorder;
     private final AiSessionService sessionService;
+    private final GithubOAuthProperties authProperties;
+
+    /**
+     * 取当前登录用户ID（未登录时回退配置的兜底用户）。
+     *
+     * <p>只在请求线程里可靠；异步链路（转写轮询、报告生成）里是兜底值，
+     * 那些地方改用「由 interviewId 反查 ai_interview.user_id」拿归属。
+     */
+    private String currentUserId() {
+        return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
+    }
 
     /**
      * 上传面试录音。
@@ -85,6 +101,8 @@ public class InterviewService {
      */
     @Transactional(rollbackFor = Exception.class)
     public InterviewUploadVO upload(String conversationId, MultipartFile file) {
+        // 上传接口始终在请求线程里执行，可以从 UserContext 取归属用户
+        String userId = currentUserId();
         // 上传前置校验：格式 + 大小
         validate(file);
 
@@ -94,19 +112,21 @@ public class InterviewService {
         if (existing != null && !InterviewStatus.FAILED.name().equals(existing.getStatus())) {
             log.info("音频内容命中已有记录，直接复用: audioHash={}, interviewId={}, status={}",
                     audioHash, existing.getInterviewId(), existing.getStatus());
-            sessionRecorder.recordUploaded(conversationId, existing.getInterviewId(), existing.getFileName());
+            // 会话行记到"当前上传者"名下：同一段录音被另一个人上传时，
+            // 会话列表该出现在他自己的列表里，而不是原上传者的
+            sessionRecorder.recordUploaded(conversationId, existing.getInterviewId(), existing.getFileName(), userId);
             backfillReusedSummary(existing);
             return new InterviewUploadVO(existing.getInterviewId(), existing.getStatus(),
                     existing.getFileName(), existing.getFileSize(), true);
         }
 
-        // 落 MinIO + ai_file_info 表 + ai_interview 记录表
-        FileInfo fileInfo = fileManageService.uploadFile(file);
+        // 落 MinIO + ai_file_info 表 + ai_interview 记录表（文件归属当前用户）
+        FileInfo fileInfo = fileManageService.uploadFile(file, userId);
         String objectName = FileManageService.generateObjectName(fileInfo.getFileId(), fileInfo.getFileType());
 
         AiInterview record = new AiInterview();
         record.setInterviewId(UUID.randomUUID().toString());
-        record.setUserId(DEFAULT_USER_ID);
+        record.setUserId(userId);
         record.setFileId(fileInfo.getFileId());
         record.setAudioHash(audioHash);
         record.setFileName(fileInfo.getFileName());
@@ -117,7 +137,7 @@ public class InterviewService {
         interviewMapper.insert(record);
 
         // 让这场面试出现在会话列表里（与 ai_interview 同一个事务）
-        sessionRecorder.recordUploaded(conversationId, record.getInterviewId(), record.getFileName());
+        sessionRecorder.recordUploaded(conversationId, record.getInterviewId(), record.getFileName(), userId);
 
         log.info("面试记录已创建: interviewId={}, fileId={}, objectName={}, size={}B",
                 record.getInterviewId(), fileInfo.getFileId(), objectName, fileInfo.getFileSize());
@@ -157,11 +177,32 @@ public class InterviewService {
     }
 
     /**
-     * 按业务标识取记录，不存在则抛异常。
+     * 按业务标识取记录（不做归属校验）。
+     *
+     * <p>只允许在"归属已由上游确认"或"系统内部链路"里使用；
+     * 任何对外接口都应该用 {@link #requireOwnedByInterviewId(String, String)}。
      */
     private AiInterview requireByInterviewId(String interviewId) {
         AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
                 .eq(AiInterview::getInterviewId, interviewId));
+        if (record == null) {
+            throw new IllegalArgumentException("面试记录不存在: " + interviewId);
+        }
+        return record;
+    }
+
+    /**
+     * 按「业务标识 + 归属用户」取记录。
+     *
+     * <p>对外的查询接口（状态/报告/下载/重试）一律走这里：{@code interviewId} 是 UUID，
+     * 但"拿到别人的 ID 就能读别人的面试报告"仍是越权，所以归属必须进 WHERE。
+     *
+     * <p>归属不符时报"不存在"而不是 403 —— 不回 403 是为了不泄露"这个 ID 真实存在"。
+     */
+    private AiInterview requireOwnedByInterviewId(String interviewId, String userId) {
+        AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
+                .eq(AiInterview::getInterviewId, interviewId)
+                .eq(AiInterview::getUserId, userId));
         if (record == null) {
             throw new IllegalArgumentException("面试记录不存在: " + interviewId);
         }
@@ -191,7 +232,7 @@ public class InterviewService {
      * 现在这两个数字来自转写落库时写入的 {@code sentence_count} / {@code speaker_count} 列。
      */
     public InterviewStatusVO status(String interviewId) {
-        AiInterview record = requireByInterviewId(interviewId);
+        AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
         boolean reportReady = StringUtils.hasText(record.getReportFileUrl());
         return new InterviewStatusVO(
                 record.getInterviewId(),
@@ -209,7 +250,7 @@ public class InterviewService {
      * 取结构化报告。
      */
     public InterviewReport report(String interviewId) {
-        AiInterview record = requireByInterviewId(interviewId);
+        AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
         if (!StringUtils.hasText(record.getReportJson())) {
             throw new IllegalStateException("报告尚未生成，当前状态: " + record.getStatus());
         }
@@ -224,7 +265,7 @@ public class InterviewService {
      * 取报告文件（Markdown）用于下载。
      */
     public ReportFile reportFile(String interviewId) {
-        AiInterview record = requireByInterviewId(interviewId);
+        AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
         if (!StringUtils.hasText(record.getReportFileName())) {
             throw new IllegalStateException("报告文件尚未生成，当前状态: " + record.getStatus());
         }
@@ -247,7 +288,7 @@ public class InterviewService {
      * （音频在 MinIO 里保留 30 天）。
      */
     public void retry(String interviewId) {
-        AiInterview record = requireByInterviewId(interviewId);
+        AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
         if (StringUtils.hasText(record.getTranscriptJson())) {
             log.info("重试：复用已有文字稿，仅重跑分析: interviewId={}", interviewId);
             taskService.analyzeAsync(interviewId);
@@ -296,7 +337,10 @@ public class InterviewService {
                 continue;
             }
             AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
-                    .eq(AiInterview::getInterviewId, interviewId));
+                    .eq(AiInterview::getInterviewId, interviewId)
+                    // 只能删自己的：别人的 interviewId 传进来时，这里查不到记录，
+                    // 于是不会删它的 MinIO 对象，delete 也命中 0 行
+                    .eq(AiInterview::getUserId, currentUserId()));
             if (record == null) {
                 // 记录本就不存在：没有对象可删，但归入本批（delete 命中 0 行），语义仍是"这场归我们删"
                 deletedIds.add(interviewId);

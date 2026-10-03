@@ -2,7 +2,10 @@ package com.dobao.dobaobackend.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.dobao.dobaobackend.auth.LoginRequired;
+import com.dobao.dobaobackend.auth.UserContext;
 import com.dobao.dobaobackend.common.BaseResult;
+import com.dobao.dobaobackend.config.GithubOAuthProperties;
 import com.dobao.dobaobackend.entity.AiFileInfo;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.pptx.AiPptInst;
@@ -30,10 +33,14 @@ import java.util.stream.Collectors;
 /**
  * 会话控制器
  * 提供会话详情查询、会话列表分页查询、会话删除接口
+ *
+ * <p>所有接口都按归属用户过滤 —— 这是"数据能区分用户"的落点。
+ * 越权访问一律按"会话不存在"回应（不回 403），避免泄露"这个 ID 真实存在"。
  */
 @RestController
 @RequestMapping("/session")
 @Tag(name = "会话管理", description = "会话查询、列表、删除接口")
+@LoginRequired
 @Slf4j
 public class SessionController {
 
@@ -49,20 +56,40 @@ public class SessionController {
     @Autowired
     private InterviewService interviewService;
 
+    @Autowired
+    private GithubOAuthProperties authProperties;
+
+    /**
+     * 取当前登录用户ID（未登录时回退兜底用户，保证本地调试可用）
+     */
+    private String currentUserId() {
+        return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
+    }
+
+    /**
+     * 查当前用户在某会话下的全部问答记录（按时间正序）
+     */
+    private List<AiSession> listOwnedSessions(String conversationId, String userId) {
+        return aiSessionService.list(new LambdaQueryWrapper<AiSession>()
+                .eq(AiSession::getSessionId, conversationId)
+                .eq(AiSession::getUserId, userId)
+                .orderByAsc(AiSession::getCreateTime));
+    }
+
     /**
      * 查询会话详情（含全部问答消息列表）
+     *
+     * <p>只查当前用户的会话：{@code conversationId} 由前端生成，
+     * 不能作为"这就是我的会话"的凭据。
      */
     @GetMapping("/{conversationId}")
     @Operation(summary = "获取会话详情", description = "根据会话ID获取会话详情及消息列表")
     public BaseResult<SessionDetailVO> getSession(@PathVariable String conversationId) {
-        log.info("获取会话详情: conversationId={}", conversationId);
+        String userId = currentUserId();
+        log.info("获取会话详情: conversationId={}, userId={}", conversationId, userId);
 
         try {
-            LambdaQueryWrapper<AiSession> sessionQuery = new LambdaQueryWrapper<AiSession>()
-                    .eq(AiSession::getSessionId, conversationId)
-                    .orderByAsc(AiSession::getCreateTime);
-
-            List<AiSession> sessions = aiSessionService.list(sessionQuery);
+            List<AiSession> sessions = listOwnedSessions(conversationId, userId);
 
             if (sessions.isEmpty()) {
                 return BaseResult.newError("会话不存在");
@@ -89,29 +116,41 @@ public class SessionController {
 
     /**
      * 分页查询会话列表（同一会话只保留最新一条记录）
+     *
+     * <p>只列当前用户的会话。这里的 SQL 有两个必须一起处理的点：
+     * <ol>
+     *   <li><b>用户过滤要下推到子查询里</b>。若写成"外层 WHERE user_id=? + 子查询
+     *       MAX(id) GROUP BY session_id"，子查询会把所有用户的行都参与去重，
+     *       一旦别人先写了同一个 session_id，你的那行就被 MAX 淘汰、整个会话凭空消失；</li>
+     *   <li>去重与 agentType 过滤都在同一个子查询里完成，避免"先去重再过滤"把
+     *       混排会话（先 chat 后面试）整体滤掉 —— 这是原实现的潜伏问题。</li>
+     * </ol>
      */
     @GetMapping("/list")
-    @Operation(summary = "获取会话列表", description = "分页查询会话列表")
+    @Operation(summary = "获取会话列表", description = "分页查询当前用户的会话列表")
     public BaseResult<PageResult<SessionListVO>> getSessionList(
             @Parameter(description = "页码") @RequestParam(defaultValue = "1") Integer pageNum,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "10") Integer pageSize,
             @Parameter(description = "智能体类型") @RequestParam(required = false) String agentType) {
-        log.info("获取会话列表: pageNum={}, pageSize={}, agentType={}", pageNum, pageSize, agentType);
+        String userId = currentUserId();
+        log.info("获取会话列表: pageNum={}, pageSize={}, agentType={}, userId={}",
+                pageNum, pageSize, agentType, userId);
 
         try {
-            LambdaQueryWrapper<AiSession> queryWrapper = new LambdaQueryWrapper<AiSession>()
-                    // 一个会话只保留最新一行：先在 SQL 里挑出每个 session_id 的最大 id，再交给分页
-                    .inSql(AiSession::getId, "SELECT MAX(id) FROM ai_session GROUP BY session_id")
-                    .orderByDesc(AiSession::getUpdateTime);
+            // 子查询：在当前用户（可选地再加 agentType）范围内，按 session_id 分组取最大 id。
+            // 用户条件必须出现在子查询里，见方法注释。
+            LambdaQueryWrapper<AiSession> subQuery = new LambdaQueryWrapper<AiSession>()
+                    .select(AiSession::getId)
+                    .eq(AiSession::getUserId, userId);
             if (StringUtils.hasText(agentType)) {
-                // ⚠️ 这个过滤与上面的 MAX(id) GROUP BY session_id 组合在一起有个潜伏问题：
-                // 先去重（取每个会话的最新一行）再按 agent_type 过滤，于是"最新行不是该类型"
-                // 的会话会被整体过滤掉 —— 混排会话（先在会话里 chat、再跑面试）一旦在面试
-                // 之后又聊了一句，按 agent_type=interview 查就查不到它了。
-                // 今天前端不传该参数（getSessionList 只传 pageNum/pageSize），所以还没暴露；
-                // 要修得把过滤下推到子查询里（或改成 EXISTS），属于另一件事。
-                queryWrapper.eq(AiSession::getAgentType, agentType);
+                subQuery.eq(AiSession::getAgentType, agentType);
             }
+            subQuery.groupBy(AiSession::getSessionId);
+
+            LambdaQueryWrapper<AiSession> queryWrapper = new LambdaQueryWrapper<AiSession>()
+                    .eq(AiSession::getUserId, userId)
+                    .in(AiSession::getId, subQuery)
+                    .orderByDesc(AiSession::getUpdateTime);
 
             Page<AiSession> page = new Page<>(pageNum, pageSize);
             Page<AiSession> resultPage = aiSessionService.page(page, queryWrapper);
@@ -152,10 +191,13 @@ public class SessionController {
     @Operation(summary = "删除会话", description = "删除会话及其关联数据")
     @Transactional(rollbackFor = Exception.class)
     public BaseResult<String> deleteSession(@PathVariable String conversationId) {
-        log.info("删除会话: conversationId={}", conversationId);
+        String userId = currentUserId();
+        log.info("删除会话: conversationId={}, userId={}", conversationId, userId);
 
+        // 只删自己的：别人的 conversationId 传进来会命中 0 行，按"会话不存在"返回
         LambdaQueryWrapper<AiSession> sessionQuery = new LambdaQueryWrapper<AiSession>()
-                .eq(AiSession::getSessionId, conversationId);
+                .eq(AiSession::getSessionId, conversationId)
+                .eq(AiSession::getUserId, userId);
         List<AiSession> sessions = aiSessionService.list(sessionQuery);
 
         if (sessions.isEmpty()) {
@@ -173,14 +215,16 @@ public class SessionController {
         // 先删面试（MinIO 对象 + ai_interview）：失败即抛，整个事务回滚
         interviewService.deleteInterviews(interviewIds, conversationId);
 
-        // 删除会话关联的文件记录
+        // 删除会话关联的文件记录（同样限自己的）
         LambdaQueryWrapper<AiFileInfo> fileQuery = new LambdaQueryWrapper<AiFileInfo>()
-                .eq(AiFileInfo::getConversationId, conversationId);
+                .eq(AiFileInfo::getConversationId, conversationId)
+                .eq(AiFileInfo::getUserId, userId);
         aiFileInfoMapper.delete(fileQuery);
 
         // 删除会话关联的PPT实例记录
         LambdaQueryWrapper<AiPptInst> pptQuery = new LambdaQueryWrapper<AiPptInst>()
-                .eq(AiPptInst::getConversationId, conversationId);
+                .eq(AiPptInst::getConversationId, conversationId)
+                .eq(AiPptInst::getUserId, userId);
         aiPptInstMapper.delete(pptQuery);
 
         // 删除会话消息记录
@@ -196,6 +240,9 @@ public class SessionController {
      * {@link InterviewSessionRecorder}），不是 ai_file_info.file_id —— 拿它去查文件表只会白查一次。
      * 文件名直接用 {@code question}（= 录音文件名），前端据此渲染录音 chip，并用 interviewId
      * 去还原进度与报告。
+     *
+     * <p>查文件信息时带上归属用户：{@code fileid} 是文件表主键，
+     * 不加这一层就等于"会话行里存了别人的 fileId 就能读到别人的文件名"。
      */
     private MessageVO convertToMessageVO(AiSession session) {
         boolean interview = InterviewSessionRecorder.AGENT_TYPE.equals(session.getAgentType());
@@ -203,6 +250,7 @@ public class SessionController {
         if (!interview && StringUtils.hasText(session.getFileid())) {
             fileInfo = aiFileInfoMapper.selectOne(new LambdaQueryWrapper<AiFileInfo>()
                     .eq(AiFileInfo::getFileId, session.getFileid())
+                    .eq(AiFileInfo::getUserId, session.getUserId())
                     .last("LIMIT 1"));
         }
 

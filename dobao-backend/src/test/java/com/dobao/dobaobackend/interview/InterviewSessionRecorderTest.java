@@ -62,7 +62,7 @@ class InterviewSessionRecorderTest {
     void recordUploaded_insertsSessionRow() {
         when(sessionService.getOne(any())).thenReturn(null);
 
-        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a");
+        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a", "u-1");
 
         ArgumentCaptor<SaveQuestionRequest> captor = ArgumentCaptor.forClass(SaveQuestionRequest.class);
         verify(sessionService).saveQuestion(captor.capture());
@@ -74,12 +74,25 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
+    @DisplayName("首次上传：把归属用户一并落库（数据隔离的依据，漏了就是所有人共享会话列表）")
+    void recordUploaded_writesOwnerUserId() {
+        when(sessionService.getOne(any())).thenReturn(null);
+
+        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a", "u-42");
+
+        ArgumentCaptor<SaveQuestionRequest> captor = ArgumentCaptor.forClass(SaveQuestionRequest.class);
+        verify(sessionService).saveQuestion(captor.capture());
+        assertEquals("u-42", captor.getValue().getUserId(),
+                "会话行必须带上归属用户，否则 SessionController 的 user_id 过滤会把它当成别人的数据");
+    }
+
+    @Test
     @DisplayName("首次上传：插入会话行之后立刻写一次'进行中'占位摘要（会话行永不为 NULL 的不变式）")
     void recordUploaded_insertPath_writesRunningPlaceholderSummary() {
         when(sessionService.getOne(any())).thenReturn(null);
         when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
 
-        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a");
+        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a", "u-1");
 
         // 插入成功之后必须补一条摘要：否则这场面试在报告生成之前 answer 一直是 NULL ——
         // 而幂等命中已有记录时不会重跑状态机，那一行就再也没人回填
@@ -94,7 +107,7 @@ class InterviewSessionRecorderTest {
         existing.setId(11L);
         when(sessionService.getOne(any())).thenReturn(existing);
 
-        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a");
+        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a", "u-1");
 
         verify(sessionService, never()).saveQuestion(any());
         Wrapper<AiSession> wrapper = captureUpdate();
@@ -112,8 +125,8 @@ class InterviewSessionRecorderTest {
     @Test
     @DisplayName("没传 conversationId（老调用方）：完全不碰会话表")
     void recordUploaded_withoutConversationId_doesNothing() {
-        recorder.recordUploaded(null, "iv-1", "interView.m4a");
-        recorder.recordUploaded("", "iv-1", "interView.m4a");
+        recorder.recordUploaded(null, "iv-1", "interView.m4a", "u-1");
+        recorder.recordUploaded("", "iv-1", "interView.m4a", "u-1");
 
         verifyNoInteractions(sessionService);
     }
@@ -123,7 +136,7 @@ class InterviewSessionRecorderTest {
     void recordUploaded_trimsConversationId() {
         when(sessionService.getOne(any())).thenReturn(null);
 
-        recorder.recordUploaded("  conv-1  ", "iv-1", "interView.m4a");
+        recorder.recordUploaded("  conv-1  ", "iv-1", "interView.m4a", "u-1");
 
         ArgumentCaptor<SaveQuestionRequest> captor = ArgumentCaptor.forClass(SaveQuestionRequest.class);
         verify(sessionService).saveQuestion(captor.capture());
@@ -145,7 +158,7 @@ class InterviewSessionRecorderTest {
     @Test
     @DisplayName("conversationId 只有空白：trim 后退化，不碰会话表")
     void recordUploaded_blankConversationId_doesNothing() {
-        recorder.recordUploaded("   ", "iv-1", "interView.m4a");
+        recorder.recordUploaded("   ", "iv-1", "interView.m4a", "u-1");
 
         verifyNoInteractions(sessionService);
     }

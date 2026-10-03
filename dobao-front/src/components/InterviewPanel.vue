@@ -62,7 +62,7 @@ const isLastStep = (index: number): boolean => index === props.session.steps.len
         <div class="interview-upload-title">上传面试录音，自动生成总结报告</div>
         <div class="interview-upload-desc">
           支持 {{ AUDIO_EXTENSIONS.join(' / ') }}，单文件不超过 {{ formatFileSize(MAX_AUDIO_BYTES) }}、时长不超过 1.5 小时。<br />
-          系统会自动转写、区分面试官与候选人，并按对话轮次逐条整理成问答清单（均为逐字原文），产出「问答清单 / 知识点清单 / 待补充知识点」。
+          系统会自动转写、区分面试官与候选人，并按对话轮次逐条整理成问答清单（均为逐字原文），产出「问答清单 / 参考回答 / 面试总结」。
         </div>
 
         <!-- 已选文件（还没提交） -->

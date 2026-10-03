@@ -246,10 +246,11 @@ public class PlanExecuteAgent extends BaseAgent {
         // 保存用户问题到数据库
         if (conversationId != null && sessionService != null) {
             AiSession savedSession = sessionService.saveQuestion(
-                    SaveQuestionRequest.builder()
+                    saveQuestionBuilder()
                             .sessionId(conversationId)
                             .question(question)
                             .firstResponseTime(firstResponseTime)
+                            .agentType(agentType)
                             .build()
             );
             currentSessionId = savedSession.getId();

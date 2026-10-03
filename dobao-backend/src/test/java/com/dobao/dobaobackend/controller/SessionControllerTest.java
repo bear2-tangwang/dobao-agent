@@ -1,8 +1,10 @@
 package com.dobao.dobaobackend.controller;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.dobao.dobaobackend.common.BaseResult;
+import com.dobao.dobaobackend.config.GithubOAuthProperties;
 import com.dobao.dobaobackend.entity.AiFileInfo;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.vo.MessageVO;
@@ -24,6 +26,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -63,11 +66,15 @@ class SessionControllerTest {
         aiFileInfoMapper = mock(AiFileInfoMapper.class);
         aiPptInstMapper = mock(AiPptInstMapper.class);
         interviewService = mock(InterviewService.class);
+        // 数据隔离依赖它取兜底用户（未登录/单测无请求上下文时用它）
+        GithubOAuthProperties authProperties = new GithubOAuthProperties();
+        authProperties.setDefaultUserId("u-default");
         controller = new SessionController();
         ReflectionTestUtils.setField(controller, "aiSessionService", sessionService);
         ReflectionTestUtils.setField(controller, "aiFileInfoMapper", aiFileInfoMapper);
         ReflectionTestUtils.setField(controller, "aiPptInstMapper", aiPptInstMapper);
         ReflectionTestUtils.setField(controller, "interviewService", interviewService);
+        ReflectionTestUtils.setField(controller, "authProperties", authProperties);
     }
 
     private AiSession interviewRow() {
@@ -182,7 +189,7 @@ class SessionControllerTest {
     }
 
     @Test
-    @DisplayName("会话列表：去重下推到 SQL（每个 session_id 取 MAX(id)），total 用分页结果的总数")
+    @DisplayName("会话列表：去重与用户过滤都下推到子查询，total 用分页结果的总数")
     void getSessionList_dedupesInSqlAndKeepsPageTotal() {
         // 一次面试上传就给同一会话新增一行，且按 update_time desc 排在前面：
         // 先去重再分页会让会话变少、total 也跟着变小，所以去重必须发生在分页之前（下推到 SQL）
@@ -209,11 +216,37 @@ class SessionControllerTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<AiSession>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
         verify(sessionService).page(ArgumentMatchers.<Page<AiSession>>any(), wrapperCaptor.capture());
-        String sql = wrapperCaptor.getValue().getTargetSql();
-        assertTrue(sql.toUpperCase().contains("MAX(ID)"),
-                "每个会话只取最新一行必须下推到 SQL（MAX(id) 子查询），实际: " + sql);
-        assertTrue(sql.toLowerCase().contains("group by session_id"),
-                "去重必须按 session_id 分组，实际: " + sql);
+        Wrapper<AiSession> wrapper = wrapperCaptor.getValue();
+        String outerSql = wrapper.getTargetSql();
+
+        // MyBatis-Plus 的 `in(子查询)` 不会把子查询拼进外层 SQL：外层只有 `id IN (?)`，
+        // 子查询的**wrapper 对象本身**作为参数值传进来。所以要断言隔离是否正确，
+        // 必须把这个嵌套 wrapper 取出来看它自己的 SQL 与参数。
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params =
+                ((AbstractWrapper<AiSession, ?, ?>) wrapper).getParamNameValuePairs();
+        Wrapper<?> subWrapper = params.values().stream()
+                .filter(Wrapper.class::isInstance)
+                .map(Wrapper.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "没有找到子查询 wrapper 参数，实际参数表: " + params + "，外层 SQL: " + outerSql));
+
+        String subSql = subWrapper.getTargetSql().toLowerCase();
+        // 子查询必须自己带用户条件：否则会拿所有用户的行一起取每组最大 id，
+        // 别人先写了同一个 session_id 时，自己那行会被淘汰、会话凭空消失。
+        assertTrue(subSql.contains("user_id"),
+                "用户过滤必须下推到子查询，实际子查询: " + subWrapper.getTargetSql());
+        assertTrue(subSql.contains("group by") && subSql.contains("session_id"),
+                "去重（按 session_id 分组取每组最大 id）必须在子查询里，实际子查询: "
+                        + subWrapper.getTargetSql());
+
+        // 子查询里绑定的用户名必须是当前用户
+        @SuppressWarnings("unchecked")
+        Map<String, Object> subParams =
+                ((AbstractWrapper<?, ?, ?>) subWrapper).getParamNameValuePairs();
+        assertTrue(subParams.containsValue("u-default"),
+                "子查询必须绑定当前用户ID，实际子查询参数: " + subParams);
     }
 
     @Test

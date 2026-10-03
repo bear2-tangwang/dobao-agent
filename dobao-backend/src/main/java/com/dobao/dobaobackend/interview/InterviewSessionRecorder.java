@@ -56,8 +56,11 @@ public class InterviewSessionRecorder {
      * 收口在这里不会漏；trim 后为空则退化为"只写 ai_interview"。
      *
      * @param conversationId 前端会话ID；为空（或空白）表示老调用方，退化为"只写 ai_interview"
+     * @param userId         归属用户。<b>必须由调用方传入</b>：本方法虽然当前只在请求线程里被调用，
+     *                       但 {@code UserContext}(ThreadLocal) 在异步/SSE 链路上不可用，
+     *                       显式传参才不会在以后被挪到异步路径时静默写错归属
      */
-    public void recordUploaded(String conversationId, String interviewId, String fileName) {
+    public void recordUploaded(String conversationId, String interviewId, String fileName, String userId) {
         // 入口先 trim：带首尾空白的 id（例如 " conv-1 "）能通过 hasText，但原样写进
         // ai_session.session_id 后与 chat 行的 session_id 不一致 —— 前端按 conversationId
         // 取会话详情会查不到这行，用户看到一个永远点不开的"幽灵会话"。
@@ -79,6 +82,7 @@ public class InterviewSessionRecorder {
             return;
         }
         sessionService.saveQuestion(SaveQuestionRequest.builder()
+                .userId(userId)
                 .sessionId(sessionId)
                 .question(StringUtils.hasText(fileName) ? fileName : interviewId)
                 .fileid(interviewId)

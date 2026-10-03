@@ -5,6 +5,18 @@ server:
       charset: UTF-8
       force: true
       enabled: true
+    session:
+      # 登录态保留 30 天
+      timeout: 30d
+      cookie:
+        # 注意：引入 spring-session-jdbc 后 Cookie 名默认是 SESSION（不是 JSESSIONID）。
+        # 下面 name/http-only/same-site 对原生 HttpSession 生效；Spring Session 的
+        # DefaultCookieSerializer 也会继承这些设置，所以要改名就在应用里注册 CookieSerializer。
+        name: DOBAO_SID
+        http-only: true
+        same-site: lax
+        # 生产 HTTPS 改成 true
+        # secure: true
 spring:
   ai:
     openai:
@@ -47,6 +59,17 @@ spring:
       enabled: true
       max-file-size: 80MB
       max-request-size: 80MB
+
+  # 登录态落 MySQL：SPRING_SESSION 表由 spring-session-jdbc 自动创建
+  session:
+    store-type: jdbc
+    jdbc:
+      # ⚠️ 官方默认值是 embedded —— 只对 H2/HSQL 这类内嵌库自动建表，
+      #    本项目的 DataSource 是 MySQL，用默认值就是"不建表"，首个请求直接报
+      #    Table 'dobao.SPRING_SESSION' doesn't exist。
+      #    上线前改成 never，再手工执行建表脚本。
+      initialize-schema: always
+      table-name: SPRING_SESSION
 
 minio:
   url: http://127.0.0.1:9000/
@@ -137,3 +160,31 @@ logging:
     io:
       modelcontextprotocol:
         client: ERROR
+
+
+# ==================== GitHub OAuth 登录 ====================
+# ⚠️ 关于主机名（踩过坑，别改回去）：
+#   会话 Cookie 按**主机名**隔离，端口不影响。所以下面两个地址的主机名
+#   必须与「你在浏览器里访问前端的地址」完全一致：
+#     redirect-uri      → GitHub 会回跳到这个地址
+#     frontend-base-url → 授权完成后浏览器落到哪里
+#   三者（含 GitHub OAuth App 里登记的 Authorization callback URL）要么都用
+#   localhost、要么都用 127.0.0.1，**绝不能混用**：
+#   混用时 authorize 写的 state 落在 A 站点，回跳到 B 站点时 Cookie 带不上，
+#   用户只会看到一句没头没脑的"登录状态已过期"（?error=state）。
+#   前端登录页会自动把当前主机名与 frontend-base-url 比对并给出提示。
+github:
+  oauth:
+    client-id: ${GITHUB_CLIENT_ID:Ov23liQzhSR9SuuqMuwX}
+    client-secret: ${GITHUB_CLIENT_SECRET:831fea2ecc9541b5084af809fdc248e4a329d431}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://127.0.0.1:8888/oauth/github/callback}
+    # 登录成功后浏览器要落回的前端地址（授权失败时也用它提示）
+    frontend-base-url: ${FRONTEND_BASE_URL:http://127.0.0.1:5173}
+    # 未登录时业务数据归属的兜底用户，与三张表 user_id 列的 DEFAULT 'default' 对齐。
+    # 这样把拦截器白名单放开做本地调试时，历史数据仍然照常可见。
+    default-user-id: default
+    # 登录态在 Session 里占用的键名
+    session-user-key: DOBAO_UID
+    # 是否开放 GET /auth/diagnostics（登录链路诊断：当前会话 id、会话里有没有 state）。
+    # 开发期留着排查"登录状态已过期"这类问题；**生产务必改成 false**（它会暴露会话 id）。
+    diagnostics-enabled: true

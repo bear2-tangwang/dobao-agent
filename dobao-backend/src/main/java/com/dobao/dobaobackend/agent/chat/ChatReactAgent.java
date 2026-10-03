@@ -149,7 +149,7 @@ public class ChatReactAgent extends BaseAgent {
         // 先落库保存用户问题，答案在流结束后回填
         if (sessionService != null) {
             AiSession savedSession = sessionService.saveQuestion(
-                    SaveQuestionRequest.builder()
+                    saveQuestionBuilder()
                             .sessionId(conversationId)
                             .question(question)
                             .fileid(currentFileId)

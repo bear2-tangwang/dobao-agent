@@ -54,7 +54,7 @@ public enum InterviewStatus {
             case UPLOADED -> "已接收录音，正在提交转写任务…";
             case TRANSCRIBING -> "正在转写（识别说话人与时间戳）…";
             case TRANSCRIBED -> "转写完成，文字稿已就绪，即将进入分析…";
-            case ANALYZING -> "正在分析（判定说话人角色、整理问答清单、归纳知识点）…";
+            case ANALYZING -> "正在分析（判定说话人角色、整理问答清单、生成参考回答与总结）…";
             case READY -> "报告已生成，可查看与下载";
             case FAILED -> "处理失败，可重试";
         };

@@ -1,5 +1,10 @@
 # 步骤 5·后端补齐：面试进度实时流（SSE）
 
+> ⚠️ **2026-10 修复**：本文档里"帧文本自己拼"的做法**是错的** —— 它导致 Spring MVC 把整段文本
+> 当成一条 data 二次包装，前端一条事件都收不到。现在改为输出结构化 `ServerSentEvent`，
+> 并补齐了转写/角色判定/报告阶段的进度与"已用 N 秒"心跳。以
+> `docs/interview-step10-progress-push-fix.md` 为准。
+
 > 前端（`docs/interview-step5-frontend.md`）当时已经按协议实现了"读 SSE + 断线降级轮询"，
 > 但后端 `GET /interview/{id}/stream` 一直没有实现。本文记录补上这一半的过程。
 

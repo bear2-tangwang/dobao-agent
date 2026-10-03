@@ -12,6 +12,15 @@
     </parent>
 
     <properties>
+        <!--
+          ⚠️ 必须有这一行。本机平台默认编码是 GB2312/GBK，不显式声明时
+          maven-compiler-plugin 会按 GBK 去读 UTF-8 源文件：中文注释里的多字节序列
+          可能被解出 "*/" 从而**提前终结 javadoc**，紧随其后的注释文字就被当成代码，
+          报出一堆莫名其妙的"需要 class、interface、enum 或 record"。
+        -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.compiler.encoding>UTF-8</maven.compiler.encoding>
         <fastjson.version>2.0.43</fastjson.version>
         <commons-lang3.version>3.12.0</commons-lang3.version>
         <pdfbox.version>2.0.30</pdfbox.version>
@@ -77,6 +86,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!--
+          登录态落 MySQL（SPRING_SESSION 表）而不是内存：
+          后端重启不掉登录、多实例可共享。版本由 spring-boot-starter-parent 管理。
+        -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-jdbc</artifactId>
         </dependency>
 
         <dependency>
@@ -175,6 +193,19 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              显式给编译插件指定编码。只靠 <properties> 里的 project.build.sourceEncoding
+              在本机（默认编码 gb2312）不生效：javac 会按平台编码去读 UTF-8 源文件，
+              中文注释被解坏后报出一堆"非法字符 / 需要 class、interface、enum 或 record"。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <encoding>UTF-8</encoding>
+                </configuration>
             </plugin>
         </plugins>
     </build>

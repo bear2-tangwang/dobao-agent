@@ -2,6 +2,7 @@ package com.dobao.dobaobackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.dobao.dobaobackend.config.GithubOAuthProperties;
 import com.dobao.dobaobackend.config.InterviewProperties;
 import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.record.FileInfo;
@@ -58,6 +59,7 @@ class InterviewServiceTest {
     private InterviewTaskService taskService;
     private InterviewSessionRecorder sessionRecorder;
     private AiSessionService sessionService;
+    private GithubOAuthProperties authProperties;
     private InterviewService service;
 
     @BeforeAll
@@ -75,8 +77,12 @@ class InterviewServiceTest {
         taskService = mock(InterviewTaskService.class);
         sessionRecorder = mock(InterviewSessionRecorder.class);
         sessionService = mock(AiSessionService.class);
+        // 归属用户来自配置：未登录（测试里没有请求上下文）时用它兜底，
+        // 断言里也用这个值，避免测试写死在 "default" 字面量上
+        authProperties = new GithubOAuthProperties();
+        authProperties.setDefaultUserId("u-default");
         service = new InterviewService(properties, interviewMapper, fileManageService,
-                minioService, taskService, new ObjectMapper(), sessionRecorder, sessionService);
+                minioService, taskService, new ObjectMapper(), sessionRecorder, sessionService, authProperties);
     }
 
     private MultipartFile audio() {
@@ -88,7 +94,7 @@ class InterviewServiceTest {
     @DisplayName("新上传：写会话行（question=文件名、fileid=interviewId），并提交转写")
     void upload_writesSessionRow() {
         when(interviewMapper.selectOne(any())).thenReturn(null);
-        when(fileManageService.uploadFile(any())).thenReturn(FileInfo.builder()
+        when(fileManageService.uploadFile(any(), anyString())).thenReturn(FileInfo.builder()
                 .fileId("file-1").fileName("interView.m4a").fileType("m4a").fileSize(10L).build());
 
         InterviewUploadVO uploaded = service.upload("conv-1", audio());
@@ -96,7 +102,7 @@ class InterviewServiceTest {
         ArgumentCaptor<String> conversationId = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> interviewId = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> fileName = ArgumentCaptor.forClass(String.class);
-        verify(sessionRecorder).recordUploaded(conversationId.capture(), interviewId.capture(), fileName.capture());
+        verify(sessionRecorder).recordUploaded(conversationId.capture(), interviewId.capture(), fileName.capture(), anyString());
         assertEquals("conv-1", conversationId.getValue());
         assertEquals(uploaded.interviewId(), interviewId.getValue());
         assertEquals("interView.m4a", fileName.getValue());
@@ -130,8 +136,8 @@ class InterviewServiceTest {
         InterviewUploadVO uploaded = service.upload("conv-2", audio());
 
         assertTrue(uploaded.reused(), "命中已有记录时应标记 reused");
-        verify(fileManageService, never()).uploadFile(any());
-        verify(sessionRecorder).recordUploaded("conv-2", "iv-9", "interView.m4a");
+        verify(fileManageService, never()).uploadFile(any(), anyString());
+        verify(sessionRecorder).recordUploaded(eq("conv-2"), eq("iv-9"), eq("interView.m4a"), anyString());
         verify(taskService, never()).submitTranscriptionAsync(anyString(), anyString());
     }
 
@@ -191,13 +197,46 @@ class InterviewServiceTest {
         verify(sessionRecorder).markReady("iv-9", 0, 0);
     }
 
+    @Test
+    @DisplayName("查别人的面试：按 interviewId + user_id 查询命中 0 行时按'不存在'拒绝")
+    void status_otherUsersInterview_isRejected() {
+        // 归属被写进 WHERE，别人的记录查不到 → selectOne 返回 null
+        when(interviewMapper.selectOne(any())).thenReturn(null);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.status("other-iv"));
+
+        assertTrue(error.getMessage().contains("不存在"),
+                "越权要按'不存在'回应（不回 403 以免泄露该 ID 真实存在），实际: " + error.getMessage());
+        assertTrue(currentUserFilterApplied(),
+                "查询语句里必须带 user_id 条件，否则归属校验形同虚设");
+    }
+
+    /**
+     * 断言最近一次 selectOne 的 wrapper 里确实带了 user_id 条件与当前用户值。
+     *
+     * <p>用 wrapper 的 SQL 片段 + 绑定参数来钉，不依赖数据库。
+     */
+    @SuppressWarnings("unchecked")
+    private boolean currentUserFilterApplied() {
+        ArgumentCaptor<Wrapper<AiInterview>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(interviewMapper).selectOne(captor.capture());
+        Wrapper<AiInterview> wrapper = captor.getValue();
+        if (!wrapper.getTargetSql().contains("user_id")) {
+            return false;
+        }
+        Map<String, Object> params =
+                ((AbstractWrapper<AiInterview, ?, ?>) wrapper).getParamNameValuePairs();
+        return params.containsValue(authProperties.getDefaultUserId());
+    }
+
     @ParameterizedTest(name = "[{index}] conversationId=[{0}]")
     @NullAndEmptySource
     @ValueSource(strings = {"   "})
     @DisplayName("conversationId 为 null / 空串 / 纯空白：上传照常成功，值原样透传（由 Recorder 决定不写会话行）")
     void upload_withoutConversationId_stillUploads(String conversationId) {
         when(interviewMapper.selectOne(any())).thenReturn(null);
-        when(fileManageService.uploadFile(any())).thenReturn(FileInfo.builder()
+        when(fileManageService.uploadFile(any(), anyString())).thenReturn(FileInfo.builder()
                 .fileId("file-2").fileName("interView.m4a").fileType("m4a").fileSize(10L).build());
 
         InterviewUploadVO uploaded = service.upload(conversationId, audio());
@@ -210,12 +249,11 @@ class InterviewServiceTest {
         // 透传原值（controller 在 ?conversationId= 时给的是 ""，"   " 也照样原样传），
         // trim 与"退化为只写 ai_interview"都在 Recorder 内部收口
         verify(sessionRecorder).recordUploaded(eq(conversationId), eq(uploaded.interviewId()),
-                eq("interView.m4a"));
+                eq("interView.m4a"), eq("u-default"));
     }
 
     /** 一条已完成的面试记录：报告对象 + 录音对象都在 MinIO 里 */
-    private AiInterview finishedInterview() {
-        AiInterview record = new AiInterview();
+    private AiInterview finishedInterview() {        AiInterview record = new AiInterview();
         record.setInterviewId("iv-1");
         record.setReportFileName("interview-report-iv-1.md");
         record.setFileId("file-1");

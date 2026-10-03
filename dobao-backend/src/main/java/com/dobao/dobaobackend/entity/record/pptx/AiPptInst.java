@@ -29,6 +29,12 @@ public class AiPptInst {
     private Long id;
 
     /**
+     * 归属用户ID（db_user.user_id）
+     */
+    @TableField("user_id")
+    private String userId;
+
+    /**
      * 会话ID
      */
     @TableField("conversation_id")

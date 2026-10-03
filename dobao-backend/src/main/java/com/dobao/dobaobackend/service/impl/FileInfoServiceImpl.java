@@ -10,6 +10,7 @@ import com.dobao.dobaobackend.service.FileInfoService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -41,9 +42,29 @@ public class FileInfoServiceImpl extends ServiceImpl<AiFileInfoMapper, AiFileInf
     }
 
     @Override
+    public FileInfo getFileInfoById(String fileId, String userId) {
+        AiFileInfo entity = getEntityById(fileId, userId);
+        if (entity == null) {
+            return null;
+        }
+        return convertToDto(entity);
+    }
+
+    @Override
     public AiFileInfo getEntityById(String fileId) {
         QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
         wrapper.eq("file_id", fileId);
+        return this.getOne(wrapper);
+    }
+
+    @Override
+    public AiFileInfo getEntityById(String fileId, String userId) {
+        QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
+        wrapper.eq("file_id", fileId);
+        // userId 为空表示"没有用户维度"（历史调用方/后台任务），不做归属过滤
+        if (StringUtils.hasText(userId)) {
+            wrapper.eq("user_id", userId);
+        }
         return this.getOne(wrapper);
     }
 
@@ -67,6 +88,17 @@ public class FileInfoServiceImpl extends ServiceImpl<AiFileInfoMapper, AiFileInf
     }
 
     @Override
+    public void deleteFileInfo(String fileId, String userId) {
+        QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
+        wrapper.eq("file_id", fileId);
+        if (StringUtils.hasText(userId)) {
+            wrapper.eq("user_id", userId);
+        }
+        this.remove(wrapper);
+        log.info("文件信息已删除: fileId={}, userId={}", fileId, userId);
+    }
+
+    @Override
     public boolean exists(String fileId) {
         QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
         wrapper.eq("file_id", fileId);
@@ -75,7 +107,15 @@ public class FileInfoServiceImpl extends ServiceImpl<AiFileInfoMapper, AiFileInf
 
     @Override
     public List<FileInfo> getAllFiles() {
+        return getAllFiles(null);
+    }
+
+    @Override
+    public List<FileInfo> getAllFiles(String userId) {
         QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
+        if (StringUtils.hasText(userId)) {
+            wrapper.eq("user_id", userId);
+        }
         List<AiFileInfo> entities = this.list(wrapper);
         return entities.stream()
                 .map(this::convertToDto)
@@ -85,6 +125,16 @@ public class FileInfoServiceImpl extends ServiceImpl<AiFileInfoMapper, AiFileInf
     @Override
     public int getFileCount() {
         return Math.toIntExact(this.count());
+    }
+
+    @Override
+    public int getFileCount(String userId) {
+        if (!StringUtils.hasText(userId)) {
+            return getFileCount();
+        }
+        QueryWrapper<AiFileInfo> wrapper = new QueryWrapper<>();
+        wrapper.eq("user_id", userId);
+        return Math.toIntExact(this.count(wrapper));
     }
 
     /**

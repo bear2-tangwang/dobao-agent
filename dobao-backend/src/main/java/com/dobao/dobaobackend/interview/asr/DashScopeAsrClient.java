@@ -132,16 +132,6 @@ public class DashScopeAsrClient {
 
     /**
      * 下载结果 JSON 原文。
-     *
-     * <p><b>两个必须注意的点</b>：
-     * <ol>
-     *   <li>{@code transcription_url} 是<b>预签名 URL</b>（查询串里带 {@code Signature}）。
-     *       必须用 {@link URI} 传入，不能传 String —— 传 String 时 Spring 会把它当作 URI
-     *       模板重新编码，签名里的 {@code +}/{@code =} 被改写后 OSS 直接返回
-     *       {@code 403 SignatureDoesNotMatch}（已实测踩到）。</li>
-     *   <li>必须按字节取回再显式按 UTF-8 解码：若直接用 {@code body(String.class)}，
-     *       响应头没有 {@code charset} 时可能按 ISO-8859-1 解码，中文会整段变乱码
-     *       —— 步骤 0 的 {@code interView-asr-raw.json} 就是这么坏掉的。</li>
      * </ol>
      */
     public String downloadResult(String resultUrl) {

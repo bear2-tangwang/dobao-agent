@@ -1,6 +1,7 @@
 package com.dobao.dobaobackend.service;
 
 
+import com.dobao.dobaobackend.auth.UserContext;
 import com.dobao.dobaobackend.entity.record.FileInfo;
 import com.dobao.dobaobackend.service.impl.FileInfoServiceImpl;
 import com.dobao.dobaobackend.splitter.OverlapParagraphTextSplitter;
@@ -59,6 +60,11 @@ public class FileManageService {
      */
     private static final int LARGE_FILE_THRESHOLD = 5000;
 
+    /**
+     * 未登录/无上下文时的兜底用户，与各表 user_id 列的 DEFAULT 'default' 保持一致
+     */
+    private static final String DEFAULT_USER_ID = "default";
+
     @Value("${spring.ai.openai.api-key}")
     private String apiKey;
 
@@ -94,15 +100,31 @@ public class FileManageService {
      */
     @Transactional(rollbackFor = Exception.class)
     public FileInfo uploadFile(MultipartFile file) {
+        return uploadFile(file, UserContext.getUserIdOrDefault(DEFAULT_USER_ID));
+    }
+
+    /**
+     * 上传文件（指定归属用户）
+     *
+     * <p>归属用户走"显式参数"而不是只读 {@code UserContext}：面试上传链路里
+     * 本方法也可能在非请求线程被调用，ThreadLocal 那时是 null。
+     *
+     * @param userId 归属用户；为空时退化为兜底用户
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public FileInfo uploadFile(MultipartFile file, String userId) {
         String fileId = UUID.randomUUID().toString();
         String fileType = getFileType(file.getOriginalFilename());
         long fileSize = file.getSize();
+        String owner = StringUtils.isNotBlank(userId) ? userId : DEFAULT_USER_ID;
 
-        log.info("开始处理文件上传: fileId={}, fileName={}, fileType={}, fileSize={}", fileId, file.getOriginalFilename(), fileType, fileSize);
+        log.info("开始处理文件上传: fileId={}, fileName={}, fileType={}, fileSize={}, userId={}",
+                fileId, file.getOriginalFilename(), fileType, fileSize, owner);
 
         try {
             // 创建文件信息
             FileInfo fileInfo = FileInfo.builder()
+                    .userId(owner)
                     .fileId(fileId)
                     .fileName(file.getOriginalFilename())
                     .fileType(fileType)
@@ -231,8 +253,21 @@ public class FileManageService {
      * @return 文件信息
      */
     public FileInfo getFileInfo(String fileId) {
-        FileInfo fileInfo = fileInfoService.getFileInfoById(fileId);
+        return getFileInfo(fileId, null);
+    }
+
+    /**
+     * 按「文件ID + 归属用户」取文件信息。
+     *
+     * <p>控制器必须用这个重载：fileId 是全局唯一索引，只按它查等于
+     * "拿到别人的 fileId 就能读内容/删文件"。
+     *
+     * @param userId 归属用户；为空时不做归属过滤（供内部/后台调用）
+     */
+    public FileInfo getFileInfo(String fileId, String userId) {
+        FileInfo fileInfo = fileInfoService.getFileInfoById(fileId, userId);
         if (fileInfo == null) {
+            // 归属不符时也报"不存在"：不回 403 是为了不泄露"这个 fileId 真实存在"
             throw new IllegalArgumentException("文件不存在: " + fileId);
         }
         return fileInfo;
@@ -266,7 +301,14 @@ public class FileManageService {
      * @return 文件内容
      */
     public String getFileContent(String fileId) {
-        FileInfo fileInfo = getFileInfo(fileId);
+        return getFileContent(fileId, null);
+    }
+
+    /**
+     * 按「文件ID + 归属用户」取文件内容
+     */
+    public String getFileContent(String fileId, String userId) {
+        FileInfo fileInfo = getFileInfo(fileId, userId);
 
         if (fileInfo.getStatus() != FileInfo.FileStatus.SUCCESS) {
             throw new IllegalStateException("文件尚未处理完成，当前状态: " + fileInfo.getStatus());
@@ -297,10 +339,17 @@ public class FileManageService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void deleteFile(String fileId) {
-        FileInfo fileInfo = fileInfoService.getFileInfoById(fileId);
-        if (fileInfo == null) {
-            throw new IllegalArgumentException("文件不存在: " + fileId);
-        }
+        deleteFile(fileId, null);
+    }
+
+    /**
+     * 删除文件（带归属校验）
+     *
+     * @param userId 归属用户；为空时不做归属过滤（供内部清理调用）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteFile(String fileId, String userId) {
+        FileInfo fileInfo = getFileInfo(fileId, userId);
 
         try {
             // 从 MinIO 删除
@@ -310,9 +359,9 @@ public class FileManageService {
             }
 
             // 从数据库删除
-            fileInfoService.deleteFileInfo(fileId);
+            fileInfoService.deleteFileInfo(fileId, userId);
 
-            log.info("文件删除成功: fileId={}", fileId);
+            log.info("文件删除成功: fileId={}, userId={}", fileId, userId);
         } catch (Exception e) {
             log.error("文件删除失败: fileId={}", fileId, e);
             throw new RuntimeException("文件删除失败: " + e.getMessage(), e);
@@ -325,7 +374,16 @@ public class FileManageService {
      * @return 文件列表
      */
     public Map<String, FileInfo> getAllFiles() {
-        List<FileInfo> fileInfos = fileInfoService.getAllFiles();
+        return getAllFiles(null);
+    }
+
+    /**
+     * 取某用户的全部文件
+     *
+     * @param userId 归属用户；为空时返回所有（仅供内部/后台调用）
+     */
+    public Map<String, FileInfo> getAllFiles(String userId) {
+        List<FileInfo> fileInfos = fileInfoService.getAllFiles(userId);
         return fileInfos.stream()
                 .collect(Collectors.toMap(FileInfo::getFileId, fileInfo -> fileInfo, (existing, replacement) -> existing, ConcurrentHashMap::new));
     }
@@ -337,6 +395,13 @@ public class FileManageService {
      */
     public int getFileCount() {
         return fileInfoService.getFileCount();
+    }
+
+    /**
+     * 取某用户的文件数量
+     */
+    public int getFileCount(String userId) {
+        return fileInfoService.getFileCount(userId);
     }
 
     /**

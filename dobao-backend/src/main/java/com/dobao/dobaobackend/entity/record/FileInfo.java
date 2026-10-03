@@ -18,6 +18,14 @@ import java.time.LocalDateTime;
 public class FileInfo {
 
     /**
+     * 归属用户ID（db_user.user_id）。
+     *
+     * <p>名字与实体 {@code AiFileInfo.userId} 一致，这样
+     * {@code FileInfoServiceImpl} 里的 {@code BeanUtils.copyProperties} 能自动带过去。
+     */
+    private String userId;
+
+    /**
      * 文件唯一标识
      */
     private String fileId;

@@ -3,6 +3,9 @@ package com.dobao.dobaobackend.controller;
 import com.dobao.dobaobackend.agent.chat.ChatReactAgent;
 import com.dobao.dobaobackend.agent.deeppresearch.PlanExecuteAgent;
 import com.dobao.dobaobackend.agent.ppt.PPTBuilderAgent;
+import com.dobao.dobaobackend.auth.LoginRequired;
+import com.dobao.dobaobackend.auth.UserContext;
+import com.dobao.dobaobackend.config.GithubOAuthProperties;
 import com.dobao.dobaobackend.service.AgentTaskManager;
 import com.dobao.dobaobackend.service.AiSessionService;
 import com.dobao.dobaobackend.tool.FileContentService;
@@ -36,6 +39,7 @@ import java.util.*;
  */
 @RestController
 @RequestMapping("/agent")
+@LoginRequired
 @Slf4j
 public class AgentController implements InitializingBean {
 
@@ -50,6 +54,27 @@ public class AgentController implements InitializingBean {
 
     @Autowired
     private FileContentService fileContentService;
+
+    @Autowired
+    private GithubOAuthProperties authProperties;
+
+    /**
+     * 取当前登录用户ID（未登录时回退配置的兜底用户）
+     */
+    private String currentUserId() {
+        return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
+    }
+
+    /**
+     * 把归属用户写进 Reactor Context。
+     *
+     * <p>为什么需要它：Agent 的 {@code @Tool} 方法（如文件内容检索）由 Spring AI 在
+     * Reactor 链内部调用，那里既没有请求线程的 ThreadLocal，也不该让 LLM 自己传用户身份。
+     * 工具侧用 {@code Mono.deferContextual} 读 {@link UserContext#REQUEST_USER_KEY}。
+     */
+    private Flux<String> withRequestUser(Flux<String> stream, String userId) {
+        return stream.contextWrite(context -> context.put(UserContext.REQUEST_USER_KEY, userId));
+    }
 
     @Value("${tavily.api-key}")
     private String tavilyApiKey;
@@ -80,11 +105,16 @@ public class AgentController implements InitializingBean {
         }
 
         try {
-            ChatReactAgent agent = initUnifiedAgent();
+            // 必须在请求线程上把归属用户取出来：一旦返回 Flux，后续逻辑跑在 Reactor 线程，
+            // UserContext(ThreadLocal) 在那边是 null
+            String userId = currentUserId();
+            ChatReactAgent agent = initUnifiedAgent(userId);
             // 获取当前会话历史记忆 默认30条记忆
             ChatMemory persistentMemory = agent.createPersistentChatMemory(conversationId, 30);
             agent.setChatMemory(persistentMemory);
-            return agent.stream(conversationId, query, fileId);
+            // 把归属用户写进 Reactor Context：Agent 的 @Tool 方法（FileContentService）跑在
+            // 链内部，读不到请求线程的 ThreadLocal，只能从这里取（见 UserContext#REQUEST_USER_KEY）
+            return withRequestUser(agent.stream(conversationId, query, fileId), userId);
         } catch (Exception e) {
             log.error("处理统一对话请求失败", e);
             return Flux.error(e);
@@ -102,11 +132,12 @@ public class AgentController implements InitializingBean {
         }
 
         try {
-            PPTBuilderAgent pptBuilderAgent = initPPTBuilderAgent();
+            String userId = currentUserId();
+            PPTBuilderAgent pptBuilderAgent = initPPTBuilderAgent(userId);
             // 使用持久化记忆加载历史记录
             ChatMemory persistentMemory = pptBuilderAgent.createPersistentChatMemory(conversationId, 30);
             pptBuilderAgent.setChatMemory(persistentMemory);
-            return pptBuilderAgent.execute(conversationId, query);
+            return withRequestUser(pptBuilderAgent.execute(conversationId, query), userId);
         } catch (Exception e) {
             log.error("处理PPT Builder请求时发生错误: ", e);
             return Flux.error(e);
@@ -125,11 +156,12 @@ public class AgentController implements InitializingBean {
         }
 
         try {
-            PlanExecuteAgent planExecuteAgent = initPlanExecuteAgent();
+            String userId = currentUserId();
+            PlanExecuteAgent planExecuteAgent = initPlanExecuteAgent(userId);
             // 使用持久化记忆加载历史记录
             ChatMemory persistentMemory = planExecuteAgent.createPersistentChatMemory(conversationId, 30);
             planExecuteAgent.setChatMemory(persistentMemory);
-            return planExecuteAgent.stream(conversationId, query);
+            return withRequestUser(planExecuteAgent.stream(conversationId, query), userId);
         } catch (Exception e) {
             log.error("处理深度研究请求时发生错误: ", e);
             return Flux.error(e);
@@ -163,36 +195,42 @@ public class AgentController implements InitializingBean {
 
     /**
      * 初始化 PlanExecute Agent
+     *
+     * @param userId 本次请求归属的用户，显式注入（SSE 的 Reactor 线程读不到 ThreadLocal）
      */
-    private PlanExecuteAgent initPlanExecuteAgent() {
+    private PlanExecuteAgent initPlanExecuteAgent(String userId) {
         log.info("初始化 PlanExecute Agent...");
 
-        return PlanExecuteAgent.builder()
+        PlanExecuteAgent agent = PlanExecuteAgent.builder()
                 .chatModel(chatModel)
                 .tools(webSearchToolCallbacks)
                 .sessionService(sessionService)
                 .taskManager(taskManager)
                 .maxRounds(3)
                 .build();
+        agent.setDefaultUserId(userId);
+        return agent;
     }
 
     /**
      * 初始化PPT Builder Agent
      */
-    private PPTBuilderAgent initPPTBuilderAgent() {
+    private PPTBuilderAgent initPPTBuilderAgent(String userId) {
         log.info("初始化PPT Builder Agent...");
 
-        return new PPTBuilderAgent(
+        PPTBuilderAgent agent = new PPTBuilderAgent(
                 chatModel,
                 Arrays.asList(webSearchToolCallbacks),
                 sessionService,
                 taskManager);
+        agent.setDefaultUserId(userId);
+        return agent;
     }
 
     /**
      * 初始化统一对话Agent，并注入联网搜索与文件检索工具
      */
-    private ChatReactAgent initUnifiedAgent() {
+    private ChatReactAgent initUnifiedAgent(String userId) {
         log.info("正在初始化统一对话Agent...");
 
         List<ToolCallback> allTools = new ArrayList<>();
@@ -201,7 +239,7 @@ public class AgentController implements InitializingBean {
         }
         allTools.addAll(List.of(ToolCallbacks.from(fileContentService)));
 
-        return ChatReactAgent.builder()
+        ChatReactAgent agent = ChatReactAgent.builder()
                 .name("chat react")
                 .chatModel(chatModel)
                 .tools(allTools)
@@ -209,6 +247,8 @@ public class AgentController implements InitializingBean {
                 .taskManager(taskManager)
                 .maxRounds(5)
                 .build();
+        agent.setDefaultUserId(userId);
+        return agent;
     }
 
     /**

@@ -36,7 +36,7 @@ public class InterviewProperties {
     private Asr asr = new Asr();
 
     /**
-     * 报告与知识点归纳相关配置
+     * 报告归纳（参考回答 + 面试总结）相关配置
      */
     private Report report = new Report();
 
@@ -83,9 +83,9 @@ public class InterviewProperties {
     }
 
     /**
-     * 报告与知识点归纳配置。
+     * 报告归纳配置。
      *
-     * <p><b>2026-10 重构后本配置块只服务于一次 LLM 调用</b>（知识点 + 待补充知识点）。
+     * <p><b>2026-10 重构后本配置块只服务于一次 LLM 调用</b>（技术问题的参考回答 + 面试总结）。
      * 原先的 {@code max-questions-per-chunk} 与 {@code extraction-concurrency} 已删除：
      * 问答清单改为由转写句子列表直接格式化（{@code QaListBuilder}），不再分块、不再逐块调模型，
      * 因此"每块多少轮""并发几个块"这两个旋钮已经没有作用对象。
@@ -94,7 +94,7 @@ public class InterviewProperties {
     public static class Report {
 
         /**
-         * 知识点归纳使用的模型名（留空表示沿用全局
+         * 报告归纳使用的模型名（留空表示沿用全局
          * {@code spring.ai.openai.chat.options.model}）。
          *
          * <p>给"归纳换一个更快的模型"留的开关：它是信息抽取任务，
@@ -103,12 +103,12 @@ public class InterviewProperties {
         private String model;
 
         /**
-         * 知识点归纳调用的随机种子。配合低温保证"同一输入同一输出"（需求 AC-13）。
+         * 报告归纳调用的随机种子。配合低温保证"同一输入同一输出"（需求 AC-13）。
          */
         private Integer seed = 42;
 
         /**
-         * 追加到知识点归纳请求体里的参数（透传给模型服务）。
+         * 追加到报告归纳请求体里的参数（透传给模型服务）。
          *
          * <p><b>用途</b>：关掉推理模型的"思考"。实测同一 prompt 下
          * {@code enable_thinking: false} 让 completion 从 8064 token 降到 5075（省 37%），
@@ -121,7 +121,7 @@ public class InterviewProperties {
         private Map<String, Object> extraBody = new LinkedHashMap<>();
 
         /**
-         * {@link #extraBody} 中真正应用到知识点归纳调用上的键。
+         * {@link #extraBody} 中真正应用到报告归纳调用上的键。
          *
          * <p>为什么不直接全量下发：这几个键最终会合进 Spring AI 的全局 ChatOptions，
          * 而对话 / PPT 那条链路也用同一个 ChatModel —— 不加白名单的话

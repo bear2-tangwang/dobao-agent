@@ -1,5 +1,6 @@
 package com.dobao.dobaobackend.controller;
 
+import com.dobao.dobaobackend.auth.LoginRequired;
 import com.dobao.dobaobackend.common.BaseResult;
 import com.dobao.dobaobackend.interview.dto.InterviewReport;
 import com.dobao.dobaobackend.interview.dto.InterviewStatusVO;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -37,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 @Slf4j
 @RestController
 @RequestMapping("/interview")
+@LoginRequired
 @RequiredArgsConstructor
 public class InterviewController {
 
@@ -70,14 +73,11 @@ public class InterviewController {
 
     /**
      * 面试进度实时流（SSE）。
-     *
-     * <p>上传接口只返回"已接收"，真正的进度（转写 / 分析 / 报告）在这条流上推。
-     * 返回的是**具名事件**（{@code event: progress} 等），与前端
-     * {@code dobao-front/src/composables/useInterview.ts} 的解析口径一致；
+     * 上传接口只返回"已接收"，真正的进度（转写 / 分析 / 报告）在这条流上推。
      * 流本身只做通知，事实来源仍是数据库，所以前端在断流时会自动降级为轮询。
      */
     @GetMapping(value = "/{interviewId}/stream", produces = "text/event-stream;charset=UTF-8")
-    public Flux<String> stream(@PathVariable String interviewId) {
+    public Flux<ServerSentEvent<String>> stream(@PathVariable String interviewId) {
         log.info("收到面试进度流请求: interviewId={}", interviewId);
         return progressHub.stream(interviewId);
     }
@@ -96,7 +96,7 @@ public class InterviewController {
     }
 
     /**
-     * 取结构化报告（问答清单 / 知识点 / 待补充知识点）
+     * 取结构化报告（问答清单 / 参考回答 / 面试总结）
      */
     @GetMapping("/{interviewId}/report")
     public BaseResult<InterviewReport> report(@PathVariable String interviewId) {

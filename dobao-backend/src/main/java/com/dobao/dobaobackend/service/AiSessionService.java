@@ -22,6 +22,15 @@ public interface AiSessionService extends IService<AiSession> {
     List<AiSession> findRecentBySessionId(String sessionId, int maxRecords);
 
     /**
+     * 按归属用户 + 会话ID查询最近记录。
+     *
+     * <p>校验归属用：{@code sessionId} 由前端生成，不能作为"这就是我的会话"的凭据。
+     *
+     * @param userId 归属用户；为 null/空时退化为不按用户过滤（仅兜底场景）
+     */
+    List<AiSession> findRecentBySessionId(String sessionId, int maxRecords, String userId);
+
+    /**
      * 保存用户问题
      * @param request 保存请求
      * @return 保存的会话记录
