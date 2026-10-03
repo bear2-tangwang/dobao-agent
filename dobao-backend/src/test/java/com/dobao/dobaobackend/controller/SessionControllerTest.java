@@ -2,6 +2,7 @@ package com.dobao.dobaobackend.controller;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.dobao.dobaobackend.common.BaseResult;
+import com.dobao.dobaobackend.entity.AiFileInfo;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.vo.MessageVO;
 import com.dobao.dobaobackend.entity.vo.SessionDetailVO;
@@ -73,6 +74,9 @@ class SessionControllerTest {
         assertEquals("iv-1", message.getInterviewId());
         assertEquals("interView.m4a", message.getFileName());
         assertEquals("iv-1", message.getFileid());
+        // 面试行的文件元信息全部为空：这条 fileid 是 interviewId，不是 ai_file_info.file_id
+        assertNull(message.getFileType(), "面试行不该有文件类型（它不是 ai_file_info 的行）");
+        assertNull(message.getFileSize(), "面试行不该有文件大小（它不是 ai_file_info 的行）");
         verifyNoInteractions(aiFileInfoMapper);
     }
 
@@ -89,5 +93,69 @@ class SessionControllerTest {
         BaseResult<SessionDetailVO> result = controller.getSession("conv-2");
 
         assertNull(result.getData().getMessages().get(0).getInterviewId());
+    }
+
+    @Test
+    @DisplayName("普通会话 + 有 fileid：文件元信息仍取自 ai_file_info，interviewId 恒为空")
+    void getSession_chatWithFileid_fillsFileMetaFromFileTable() {
+        AiSession row = new AiSession();
+        row.setId(7L);
+        row.setSessionId("conv-3");
+        row.setAgentType("chat");
+        row.setQuestion("帮我看看这份年报");
+        row.setFileid("file-9");
+        AiFileInfo info = new AiFileInfo();
+        info.setFileId("file-9");
+        info.setFileName("年报.pdf");
+        info.setFileType("pdf");
+        info.setFileSize(1024L);
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(row));
+        when(aiFileInfoMapper.selectOne(ArgumentMatchers.<Wrapper<AiFileInfo>>any())).thenReturn(info);
+
+        MessageVO message = controller.getSession("conv-3").getData().getMessages().get(0);
+
+        // 反向分支：非面试侧必须照旧走文件表，且 interviewId 只能是 null
+        assertEquals("年报.pdf", message.getFileName());
+        assertEquals("pdf", message.getFileType());
+        assertEquals(Long.valueOf(1024L), message.getFileSize());
+        assertNull(message.getInterviewId());
+        assertEquals("file-9", message.getFileid());
+    }
+
+    @Test
+    @DisplayName("同一 sessionId 多行（面试行 + chat 行混排）：逐行判断，interviewId 归属不串行")
+    void getSession_mixedRows_interviewIdIsPerRow() {
+        AiSession interview = interviewRow();
+        AiSession chat = new AiSession();
+        chat.setId(8L);
+        chat.setSessionId("conv-1");
+        chat.setAgentType("chat");
+        chat.setQuestion("帮我看看这份年报");
+        chat.setFileid("file-9");
+        chat.setCreateTime(LocalDateTime.now());
+        AiFileInfo info = new AiFileInfo();
+        info.setFileId("file-9");
+        info.setFileName("年报.pdf");
+        info.setFileType("pdf");
+        info.setFileSize(1024L);
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any()))
+                .thenReturn(List.of(interview, chat));
+        when(aiFileInfoMapper.selectOne(ArgumentMatchers.<Wrapper<AiFileInfo>>any())).thenReturn(info);
+
+        SessionDetailVO detail = controller.getSession("conv-1").getData();
+
+        // agentType 取首行：首行是面试行 → 整个会话按面试入口展示
+        assertEquals("interview", detail.getAgentType());
+        assertEquals(2, detail.getMessages().size(), "一个会话可含多行（多场面试 + chat），不能只回第一行");
+
+        MessageVO first = detail.getMessages().get(0);
+        assertEquals("iv-1", first.getInterviewId(), "面试行的 interviewId 来自自己的 fileid");
+        assertEquals("interView.m4a", first.getFileName());
+        assertNull(first.getFileType(), "面试行不去查文件表，元信息为空");
+
+        MessageVO second = detail.getMessages().get(1);
+        assertNull(second.getInterviewId(), "chat 行的 fileid 是文件ID，不是 interviewId，必须判空");
+        assertEquals("年报.pdf", second.getFileName(), "chat 行照旧去文件表补文件名");
+        assertEquals("file-9", second.getFileid());
     }
 }
