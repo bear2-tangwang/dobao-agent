@@ -45,14 +45,19 @@ public class InterviewController {
 
     /**
      * 上传面试录音，返回 interviewId 与初始状态
+     *
+     * @param conversationId 前端会话ID（可选）：带上它，这场面试才会出现在会话列表里
      */
     @PostMapping("/upload")
-    public BaseResult<InterviewUploadVO> upload(@RequestParam("file") MultipartFile file) {
-        log.info("收到面试录音上传请求: fileName={}, size={}",
+    public BaseResult<InterviewUploadVO> upload(@RequestParam("file") MultipartFile file,
+                                                @RequestParam(value = "conversationId", required = false)
+                                                String conversationId) {
+        log.info("收到面试录音上传请求: fileName={}, size={}, conversationId={}",
                 file == null ? null : file.getOriginalFilename(),
-                file == null ? null : file.getSize());
+                file == null ? null : file.getSize(),
+                conversationId);
         try {
-            return BaseResult.newSuccess(interviewService.upload(file));
+            return BaseResult.newSuccess(interviewService.upload(conversationId, file));
         } catch (IllegalArgumentException e) {
             // 参数类错误（格式/大小/空文件）是可预期的，按业务错误返回，不打堆栈
             log.warn("面试录音上传参数校验失败: {}", e.getMessage());

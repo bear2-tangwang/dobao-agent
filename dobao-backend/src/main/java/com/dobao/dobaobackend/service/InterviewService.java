@@ -5,6 +5,7 @@ import com.dobao.dobaobackend.config.InterviewProperties;
 import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.record.FileInfo;
 import com.dobao.dobaobackend.entity.record.InterviewStatus;
+import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
 import com.dobao.dobaobackend.interview.dto.InterviewReport;
 import com.dobao.dobaobackend.interview.dto.InterviewStatusVO;
 import com.dobao.dobaobackend.interview.dto.InterviewUploadVO;
@@ -55,6 +56,7 @@ public class InterviewService {
     private final MinioService minioService;
     private final InterviewTaskService taskService;
     private final ObjectMapper objectMapper;
+    private final InterviewSessionRecorder sessionRecorder;
 
     /**
      * 上传面试录音。
@@ -63,11 +65,16 @@ public class InterviewService {
      * 不重复上传、不重复计费。注意<b>不能只靠 {@code asr_task_id} 判重</b>——它在提交转写
      * 之前是 NULL，拦不住重复上传。
      *
-     * @param file 上传的音频（mp3/wav/m4a/aac/flac/amr，≤80MB）
+     * <p>本方法同时负责"让这场面试出现在会话列表里"：拿到 interviewId 后立刻写一行
+     * {@code ai_session}（见 {@link InterviewSessionRecorder}）。<b>幂等命中的分支也要写</b>——
+     * 否则把已上传过的录音传到另一个会话里，那个会话永远不会出现这场面试。
+     *
+     * @param conversationId 前端会话ID（可选；为空时退化为"只写 ai_interview"）
+     * @param file           上传的音频（mp3/wav/m4a/aac/flac/amr，≤80MB）
      * @return 上传结果（含 interviewId）
      */
     @Transactional(rollbackFor = Exception.class)
-    public InterviewUploadVO upload(MultipartFile file) {
+    public InterviewUploadVO upload(String conversationId, MultipartFile file) {
         // 上传前置校验：格式 + 大小
         validate(file);
 
@@ -77,6 +84,7 @@ public class InterviewService {
         if (existing != null && !InterviewStatus.FAILED.name().equals(existing.getStatus())) {
             log.info("音频内容命中已有记录，直接复用: audioHash={}, interviewId={}, status={}",
                     audioHash, existing.getInterviewId(), existing.getStatus());
+            sessionRecorder.recordUploaded(conversationId, existing.getInterviewId(), existing.getFileName());
             return new InterviewUploadVO(existing.getInterviewId(), existing.getStatus(),
                     existing.getFileName(), existing.getFileSize(), true);
         }
@@ -96,6 +104,9 @@ public class InterviewService {
         record.setAsrModel(properties.getAsr().getModel());
         record.setStatus(InterviewStatus.UPLOADED.name());
         interviewMapper.insert(record);
+
+        // 让这场面试出现在会话列表里（与 ai_interview 同一个事务）
+        sessionRecorder.recordUploaded(conversationId, record.getInterviewId(), record.getFileName());
 
         log.info("面试记录已创建: interviewId={}, fileId={}, objectName={}, size={}B",
                 record.getInterviewId(), fileInfo.getFileId(), objectName, fileInfo.getFileSize());
