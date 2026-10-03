@@ -44,7 +44,7 @@
 | `session_id` | 前端 `conversationId` | 与 chat 同一 id 空间；多场面试 = 多行 |
 | `agent_type` | `interview` | 列表/详情/前端分支依据。`SessionController.normalizeAgentType` 只把 `websearch`/`file` 归并为 `chat`，`interview` 会原样保留 |
 | `question` | 录音文件名 | 侧边栏标题取 `question[:20]`（`api/index.ts` `loadChats`），正好是 `interView.m4a` 这种形态 |
-| `answer` | 状态摘要 | 处理中留空；成功写完成摘要；失败写失败摘要 |
+| `answer` | 状态摘要 | 处理中写占位摘要（`面试总结进行中…`）；成功写完成摘要；失败写失败摘要；重试时覆盖上一次的失败摘要 |
 | `fileid` | `interviewId` | 决策 4 |
 | `create_time` | 上传时刻 | 决定回放顺序 |
 | `update_time` | 回填时刻 | 决定列表排序（报告就绪后浮到最前） |
@@ -56,9 +56,17 @@
 新增独立 Bean `InterviewSessionRecorder`（`interview/` 包）：
 
 - `recordUploaded(conversationId, interviewId, fileName)` — 插入会话行（`answer` 空）；
-  若 `(session_id, fileid)` 已存在则只刷 `update_time`（幂等，不重复插行）
+  若 `(session_id, fileid, agent_type)` 已存在则只刷 `update_time`（幂等，不重复插行）
+- `markRunning(interviewId)` — 处理中占位摘要（上传后 / 重试时覆盖上一次的失败摘要）
 - `markReady(interviewId, qaCount, referenceCount)` — 回填成功摘要
 - `markFailed(interviewId, reason)` — 回填失败摘要
+
+回填一律用**一次批量 UPDATE**（`where agent_type='interview' and fileid=?`），并**显式写 `update_time = LocalDateTime.now()`**：
+`ai_session.update_time` 在本仓库全部来自 JVM 时钟，省掉这一列会让 MySQL 的 `ON UPDATE CURRENT_TIMESTAMP` 写入 UTC，
+比 JVM 早 8 小时，`update_time desc` 的列表排序就错了（该现象本仓库已实测记录，见 `InterviewTaskService` 的 UTC 注释）。
+
+**回填失败不得影响面试本身**：`publishReport` 抛出的任何异常都会被 `runAnalysis` 的 catch 接住并把状态置成 FAILED。
+所以回填必须包在自己的 try/catch 里（只记告警）——否则"会话表写失败"会把一场报告已经生成好的面试翻成"失败"。
 
 **为什么单开一个 Bean**：`InterviewService` 的类注释明确要求"状态机的所有写都在 `InterviewTaskService`，
 避免两个类互相依赖"。上传写入（快路径）在 `InterviewService`，回填（异步线程）在 `InterviewTaskService`，

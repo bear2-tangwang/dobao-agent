@@ -23,6 +23,16 @@
 | 测试设施 | 后端：JUnit 5 + Mockito + `spring-test`（无 H2、无集成测试数据库）；**前端没有任何测试设施，也没有 test script** |
 | 关键约定 | `ai_session.fileid` 在本表里是"按 `agent_type` 解释的业务指针"（见 `AiSession.fileid` 注释）；`agent_type='interview'` 时它存的是 `interviewId` |
 | 通用返回 | `BaseResult.newSuccess(data)` / `newError(msg)`，成功码 `200` |
+| MyBatis-Plus | 版本 **3.5.5**（`pom.xml` 的 `mybatis.version`）。两个实测坑：① `IService#update(Wrapper)` 返回 **`boolean`**（不是 `int`）；② `list(any())` 会撞 `list(Wrapper)` / `list(IPage)` 重载歧义，测试里必须写成 `ArgumentMatchers.<Wrapper<AiSession>>any()` |
+| 测试工具 | `dobao-backend/src/test/java/com/dobao/dobaobackend/testsupport/MybatisPlusTableInfo.ensure(Class...)`：要断言 `LambdaQueryWrapper` 生成的 SQL / 绑定参数时，必须先在 `@BeforeAll` 里注册实体的 `TableInfo`，否则抛 `can not find lambda cache for this entity`（Task 1 已建立，Task 5 复用） |
+
+## 执行状态
+
+| 任务 | 状态 | 提交 |
+|---|---|---|
+| 前置：测试依赖 | ✅ | `2869951` |
+| Task 1 面试会话写入器 | ✅ 规范审查 PASS + 质量审查整改后复审中 | `27e1845` → `ecb9df5` |
+| Task 2 ~ Task 9 | ⏳ | |
 
 **⚠️ 验证方式的例外（需要你知情）**：Task 7 / Task 8 是前端改动，仓库里没有测试框架。本计划**不引入 vitest**（那会把一个"接上历史"的需求膨胀成"搭一套前端测试基建"）。这两个任务的验证方式是 `npm run type-check` + Task 9 的浏览器手工验收。若你希望引入前端测试框架，请在开始前告知，我会把 Task 7/8 改写成 TDD 形式。
 
@@ -315,6 +325,12 @@ git add dobao-backend/src/main/java/com/dobao/dobaobackend/interview/InterviewSe
         dobao-backend/src/test/java/com/dobao/dobaobackend/interview/InterviewSessionRecorderTest.java
 git commit -m "feat(interview): 新增面试会话写入器，一场面试写一行 ai_session"
 ```
+
+**✅ 已完成（`27e1845`，质量审查整改后 `ecb9df5`）**，与上面这份草稿有三处必须知道的偏差（后续任务照此办理）：
+
+1. 测试里 `sessionService.list(any())` 必须写 `ArgumentMatchers.<Wrapper<AiSession>>any()`，否则 MyBatis-Plus 3.5.5 的 `list(Wrapper)` / `list(IPage)` 重载歧义会让测试编译不过。
+2. 断言 wrapper 的 SQL/参数前，要在 `@BeforeAll` 里 `MybatisPlusTableInfo.ensure(AiSession.class)`（工具类已建立）；不注册会抛 `can not find lambda cache for this entity`。
+3. 质量审查把回填从"`list` 查出 N 行 → 逐行 `updateAnswer`"改成了**一次批量 `UPDATE`**（`AiSessionServiceImpl.updateAnswer` 内部还要 `getById`，等于 1+2N 条 SQL 且是整行读-改-写），并且**显式 `set(AiSession::getUpdateTime, LocalDateTime.now())`** —— `ai_session.update_time` 在本仓库全部来自 JVM 时钟，省掉它会写 UTC、比 JVM 早 8 小时，`update_time desc` 排序就错了。
 
 ---
 
@@ -683,6 +699,28 @@ class InterviewTaskServiceTest {
 
         verify(sessionRecorder, never()).markFailed(anyString(), anyString());
     }
+
+    @Test
+    @DisplayName("回填会话摘要失败时不能把已就绪的面试翻成失败")
+    void publishReport_sessionWriteFailure_isSwallowed() throws Exception {
+        AiInterview record = new AiInterview();
+        record.setInterviewId("iv-1");
+        InterviewReport report = new InterviewReport("iv-1", 1000L, LocalDateTime.now(),
+                List.of(), List.of(), new ReportSummary(List.of(), List.of(), "总结"));
+        when(reportGenerator.generate(eq(record), any())).thenReturn(report);
+        when(reportRenderer.render(report)).thenReturn("# 报告");
+        when(minioService.uploadFile(anyString(), any(), anyString())).thenReturn("http://minio/report.md");
+        // 会话表写失败：不能影响面试本身
+        org.mockito.Mockito.doThrow(new RuntimeException("db down"))
+                .when(sessionRecorder).markReady(anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.anyInt());
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> taskService.publishReport(record, List.of()));
+
+        // 报告仍然照常推给前端
+        verify(progressHub).publishComplete(eq("iv-1"), anyString(), anyString());
+    }
 }
 ```
 
@@ -703,7 +741,26 @@ Expected: FAIL —— 编译不过：`publishReport` 是 private（测试看不�
 import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
 ```
 
-3b. `updateStatus`：挂失败回填 + 处理中摘要（完整替换）：
+3b. 新增"回填摘要"的容错包装 + 改 `updateStatus`。
+
+```java
+    /**
+     * 回填会话摘要，**并且吞掉它自己的异常**。
+     *
+     * <p>摘要只是"让这场面试在会话列表里看得见"的辅助信息，它不能反过来影响面试本身：
+     * {@code publishReport} 里任何异常都会被 {@code runAnalysis} 的 catch 接住并把状态置成
+     * FAILED —— 也就是说，如果回填抛异常而这里不拦，一场报告已经生成好的面试会被翻成"失败"。
+     */
+    private void recordSessionSummary(Runnable action) {
+        try {
+            action.run();
+        } catch (Exception e) {
+            log.warn("回填面试会话摘要失败（不影响面试流程本身）: {}", e.getMessage(), e);
+        }
+    }
+```
+
+`updateStatus` 完整替换：
 
 ```java
     /**
@@ -728,9 +785,9 @@ import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
         log.info("状态更新: interviewId={}, status={}, rows={}", interviewId, status, rows);
 
         if (status == InterviewStatus.FAILED) {
-            sessionRecorder.markFailed(interviewId, errorMsg);
+            recordSessionSummary(() -> sessionRecorder.markFailed(interviewId, errorMsg));
         } else if (status == InterviewStatus.TRANSCRIBING || status == InterviewStatus.ANALYZING) {
-            sessionRecorder.markRunning(interviewId);
+            recordSessionSummary(() -> sessionRecorder.markRunning(interviewId));
         }
 
         progressHub.publishStatus(interviewId, status, errorMsg);
@@ -757,10 +814,11 @@ import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
                 .set(AiInterview::getStatus, InterviewStatus.READY.name())
                 .set(AiInterview::getErrorMsg, null));
 
-        // 会话摘要回填：报告正文仍在 report_json，这里只写一行可读摘要给会话列表/详情兜底
-        sessionRecorder.markReady(interviewId,
+        // 会话摘要回填：报告正文仍在 report_json，这里只写一行可读摘要给会话列表/详情兜底。
+        // 用 recordSessionSummary 包一层：回填失败绝不能把这场已经生成好报告的面试翻成 FAILED
+        recordSessionSummary(() -> sessionRecorder.markReady(interviewId,
                 report.qaList() == null ? 0 : report.qaList().size(),
-                report.referenceAnswers() == null ? 0 : report.referenceAnswers().size());
+                report.referenceAnswers() == null ? 0 : report.referenceAnswers().size()));
 
         // 落库之后再推终态：前端拿到 complete 就能直接渲染报告正文（不必再请求一次报告接口）
         progressHub.publishComplete(interviewId, reportUrl, reportJson);
@@ -771,7 +829,7 @@ import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
 **Step 4: 跑测试，确认通过**
 
 Command: `mvn -q -Dtest=InterviewTaskServiceTest -DfailIfNoTests=false test`
-Expected: PASS（3 个用例）
+Expected: PASS（4 个用例）
 
 **Step 5: 提交**
 
@@ -795,6 +853,7 @@ git commit -m "feat(interview): 报告就绪/失败时回填会话摘要"
 ```java
 package com.dobao.dobaobackend.controller;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.dobao.dobaobackend.common.BaseResult;
 import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.AiSession;
@@ -813,6 +872,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -857,7 +917,8 @@ class SessionControllerTest {
     @Test
     @DisplayName("面试会话详情：interviewId=fileid、fileName=question，且不去查文件表")
     void getSession_interview_exposesInterviewId() {
-        when(sessionService.list(any())).thenReturn(List.of(interviewRow()));
+        // 注意：IService#list 有 list(Wrapper) / list(IPage) 两个重载，裸 any() 会编译不过
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(interviewRow()));
 
         BaseResult<SessionDetailVO> result = controller.getSession("conv-1");
 
@@ -878,11 +939,11 @@ class SessionControllerTest {
         row.setSessionId("conv-2");
         row.setAgentType("chat");
         row.setQuestion("介绍一下 node.js");
-        when(sessionService.list(any())).thenReturn(List.of(row));
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(row));
 
         BaseResult<SessionDetailVO> result = controller.getSession("conv-2");
 
-        assertEquals(null, result.getData().getMessages().get(0).getInterviewId());
+        assertNull(result.getData().getMessages().get(0).getInterviewId());
     }
 }
 ```
@@ -1003,6 +1064,19 @@ git commit -m "feat(session): 会话详情为面试消息补 interviewId 与文�
 ```
 
 （本用例需要新增 import：`com.baomidou.mybatisplus.core.conditions.Wrapper`、`com.baomidou.mybatisplus.extension.plugins.pagination.Page`、`com.dobao.dobaobackend.entity.vo.PageResult`、`com.dobao.dobaobackend.entity.vo.SessionListVO`、`org.mockito.ArgumentCaptor`、`org.junit.jupiter.api.Assertions.assertTrue`、`org.mockito.Mockito.verify`。）
+
+同时给 `SessionControllerTest` 补一个 `@BeforeAll`（**否则 `getTargetSql()` 会抛 `can not find lambda cache for this entity [AiSession]`**，这是 Task 1 实测踩过的坑）：
+
+```java
+    @BeforeAll
+    static void initTableInfo() {
+        // LambdaQueryWrapper 要把 AiSession::getId 解析成列名，依赖 MyBatis-Plus 的 TableInfo，
+        // 而单测没有 Spring 上下文，所以这里只注册元数据（不连库）
+        MybatisPlusTableInfo.ensure(AiSession.class);
+    }
+```
+
+所需 import：`org.junit.jupiter.api.BeforeAll`、`com.dobao.dobaobackend.testsupport.MybatisPlusTableInfo`。
 
 **Step 2: 跑测试，确认失败**
 
@@ -1129,7 +1203,7 @@ git commit -m "fix(session): 会话列表按会话去重后再分页，修掉重
     @Test
     @DisplayName("删除会话：把会话里的 interviewId 交给面试服务级联清理")
     void deleteSession_cascadesInterviews() {
-        when(sessionService.list(any())).thenReturn(List.of(interviewRow()));
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(interviewRow()));
 
         BaseResult<String> result = controller.deleteSession("conv-1");
 
@@ -1141,7 +1215,7 @@ git commit -m "fix(session): 会话列表按会话去重后再分页，修掉重
     @Test
     @DisplayName("删除不存在的会话：不触发面试清理")
     void deleteSession_missingSession_doesNothing() {
-        when(sessionService.list(any())).thenReturn(List.of());
+        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of());
 
         BaseResult<String> result = controller.deleteSession("conv-x");
 
