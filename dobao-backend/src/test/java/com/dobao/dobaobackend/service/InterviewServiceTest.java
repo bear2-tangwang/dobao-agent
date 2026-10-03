@@ -1,13 +1,20 @@
 package com.dobao.dobaobackend.service;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.dobao.dobaobackend.config.InterviewProperties;
 import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.record.FileInfo;
 import com.dobao.dobaobackend.entity.record.InterviewStatus;
 import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
+import com.dobao.dobaobackend.interview.dto.InterviewReport;
 import com.dobao.dobaobackend.interview.dto.InterviewUploadVO;
+import com.dobao.dobaobackend.interview.dto.QaItem;
+import com.dobao.dobaobackend.interview.dto.ReferenceAnswer;
 import com.dobao.dobaobackend.mapper.AiInterviewMapper;
+import com.dobao.dobaobackend.testsupport.MybatisPlusTableInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,16 +26,24 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -42,7 +57,13 @@ class InterviewServiceTest {
     private MinioService minioService;
     private InterviewTaskService taskService;
     private InterviewSessionRecorder sessionRecorder;
+    private AiSessionService sessionService;
     private InterviewService service;
+
+    @BeforeAll
+    static void initTableInfo() {
+        MybatisPlusTableInfo.ensure(AiInterview.class);
+    }
 
     @BeforeEach
     void setUp() {
@@ -53,8 +74,9 @@ class InterviewServiceTest {
         minioService = mock(MinioService.class);
         taskService = mock(InterviewTaskService.class);
         sessionRecorder = mock(InterviewSessionRecorder.class);
+        sessionService = mock(AiSessionService.class);
         service = new InterviewService(properties, interviewMapper, fileManageService,
-                minioService, taskService, new ObjectMapper(), sessionRecorder);
+                minioService, taskService, new ObjectMapper(), sessionRecorder, sessionService);
     }
 
     private MultipartFile audio() {
@@ -113,6 +135,62 @@ class InterviewServiceTest {
         verify(taskService, never()).submitTranscriptionAsync(anyString(), anyString());
     }
 
+    @Test
+    @DisplayName("幂等命中 READY 记录：按报告回填完成摘要（复用不会再走状态机，不补就永远停在占位文案）")
+    void upload_duplicateHit_readyRecord_backfillsReadySummary() throws Exception {
+        AiInterview existing = new AiInterview();
+        existing.setInterviewId("iv-9");
+        existing.setStatus(InterviewStatus.READY.name());
+        existing.setFileName("interView.m4a");
+        existing.setFileId("file-9");
+        // 用真实 ObjectMapper 序列化一份报告：report_json 在库里就是这个形态，
+        // 手写 JSON 字符串会与 record 结构脱节（字段改名后测试仍然"绿"）
+        InterviewReport report = new InterviewReport("iv-9", 1000L, null,
+                List.of(new QaItem("Q001", "什么是索引下推？", 0L, "把过滤条件下推到引擎层…", 1000L, 5000L),
+                        new QaItem("Q002", "介绍一下 MVCC", 6000L, "多版本并发控制…", 7000L, 12000L)),
+                List.of(new ReferenceAnswer("Q001", "什么是索引下推？", "在 InnoDB 里下推到引擎层过滤。")),
+                null);
+        existing.setReportJson(new ObjectMapper().writeValueAsString(report));
+        when(interviewMapper.selectOne(any())).thenReturn(existing);
+
+        service.upload("conv-2", audio());
+
+        verify(sessionRecorder).markReady("iv-9", 2, 1);
+        verify(sessionRecorder, never()).markRunning(anyString());
+    }
+
+    @Test
+    @DisplayName("幂等命中处理中记录（TRANSCRIBING）：按当前状态回填'进行中'摘要")
+    void upload_duplicateHit_transcribingRecord_marksRunning() {
+        AiInterview existing = new AiInterview();
+        existing.setInterviewId("iv-9");
+        existing.setStatus(InterviewStatus.TRANSCRIBING.name());
+        existing.setFileName("interView.m4a");
+        existing.setFileId("file-9");
+        when(interviewMapper.selectOne(any())).thenReturn(existing);
+
+        service.upload("conv-2", audio());
+
+        verify(sessionRecorder).markRunning("iv-9");
+        verify(sessionRecorder, never()).markReady(anyString(), anyInt(), anyInt());
+    }
+
+    @Test
+    @DisplayName("幂等命中 READY 但报告 JSON 解析不了：按无计数回填完成摘要，不能停在'进行中'")
+    void upload_duplicateHit_readyRecordWithBrokenReport_stillMarksReady() {
+        AiInterview existing = new AiInterview();
+        existing.setInterviewId("iv-9");
+        existing.setStatus(InterviewStatus.READY.name());
+        existing.setFileName("interView.m4a");
+        existing.setFileId("file-9");
+        existing.setReportJson("{ 这不是合法 JSON");
+        when(interviewMapper.selectOne(any())).thenReturn(existing);
+
+        service.upload("conv-2", audio());
+
+        verify(sessionRecorder).markReady("iv-9", 0, 0);
+    }
+
     @ParameterizedTest(name = "[{index}] conversationId=[{0}]")
     @NullAndEmptySource
     @ValueSource(strings = {"   "})
@@ -133,5 +211,106 @@ class InterviewServiceTest {
         // trim 与"退化为只写 ai_interview"都在 Recorder 内部收口
         verify(sessionRecorder).recordUploaded(eq(conversationId), eq(uploaded.interviewId()),
                 eq("interView.m4a"));
+    }
+
+    /** 一条已完成的面试记录：报告对象 + 录音对象都在 MinIO 里 */
+    private AiInterview finishedInterview() {
+        AiInterview record = new AiInterview();
+        record.setInterviewId("iv-1");
+        record.setReportFileName("interview-report-iv-1.md");
+        record.setFileId("file-1");
+        record.setFileName("interView.m4a");
+        return record;
+    }
+
+    @Test
+    @DisplayName("级联删除面试：报告对象与录音对象都从 MinIO 删掉，再删 ai_interview 记录")
+    void deleteInterviews_removesObjectsThenRows() throws Exception {
+        when(interviewMapper.selectOne(any())).thenReturn(finishedInterview());
+        // 显式打桩"没有被别的会话引用"：Mockito 默认就是 0，但写出来意图才清楚
+        when(sessionService.count(any())).thenReturn(0L);
+
+        service.deleteInterviews(List.of("iv-1"), "conv-1");
+
+        verify(minioService).deleteFile("interview-report-iv-1.md");
+        // 录音的 objectName 由 fileId + 文件类型算出来，规则与上传/重试两侧同源
+        verify(minioService).deleteFile("file-file1.m4a");
+        verify(interviewMapper).delete(any());
+    }
+
+    @Test
+    @DisplayName("级联删除面试：MinIO 删除失败必须抛异常且不删库（由会话删除事务整体回滚）")
+    void deleteInterviews_objectDeleteFails_throwsAndKeepsRows() throws Exception {
+        when(interviewMapper.selectOne(any())).thenReturn(finishedInterview());
+        when(sessionService.count(any())).thenReturn(0L);
+        doThrow(new RuntimeException("minio down")).when(minioService).deleteFile(anyString());
+
+        assertThrows(IllegalStateException.class, () -> service.deleteInterviews(List.of("iv-1"), "conv-1"));
+
+        // 先删对象、后删库：删库失败可见并可重试；反过来会留下"记录没了、录音还在"的不可见残留
+        verify(interviewMapper, never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("级联删除面试：查不到记录时不碰 MinIO，但照样按 interviewId 删 0 行")
+    void deleteInterviews_recordMissing_onlyDeletesRows() throws Exception {
+        when(interviewMapper.selectOne(any())).thenReturn(null);
+        when(sessionService.count(any())).thenReturn(0L);
+
+        service.deleteInterviews(List.of("iv-404"), "conv-1");
+
+        verify(minioService, never()).deleteFile(anyString());
+        verify(interviewMapper).delete(any());
+    }
+
+    @Test
+    @DisplayName("级联删除面试：仍被别的会话引用时只解引用，不删 MinIO 对象、不删 ai_interview 记录")
+    void deleteInterviews_referencedByOtherConversation_keepsObjectsAndRecord() throws Exception {
+        // 同一段录音在 conv-2 里也上传过（幂等命中同一 interviewId）→ 删 conv-1 不能动它
+        when(sessionService.count(any())).thenReturn(1L);
+
+        service.deleteInterviews(List.of("iv-1"), "conv-1");
+
+        verify(minioService, never()).deleteFile(anyString());
+        verify(interviewMapper, never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("级联删除面试：一批里被引用的跳过、未引用的照删，delete 只带真正删掉的那批")
+    void deleteInterviews_mixedReferences_deletesOnlyUnreferenced() throws Exception {
+        // iv-1 仍被别的会话引用，iv-2 没有
+        when(sessionService.count(any())).thenReturn(1L, 0L);
+        AiInterview second = new AiInterview();
+        second.setInterviewId("iv-2");
+        second.setFileId("file-2");
+        second.setFileName("interView.m4a");
+        when(interviewMapper.selectOne(any())).thenReturn(second);
+
+        service.deleteInterviews(List.of("iv-1", "iv-2"), "conv-1");
+
+        // 被引用的那场连查都不查，自然也不会删它的录音/报告
+        verify(interviewMapper, times(1)).selectOne(any());
+        verify(minioService, never()).deleteFile("interview-report-iv-1.md");
+        verify(minioService, never()).deleteFile("file-file1.m4a");
+        verify(minioService).deleteFile("file-file2.m4a");
+
+        // 关键不变式：delete 的入参只能是"真正删掉的那批"，带上 iv-1 就把别的会话在用的记录删了
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AiInterview>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(interviewMapper).delete(captor.capture());
+        captor.getValue().getTargetSql(); // MyBatis-Plus 3.5.x 参数惰性绑定，先取 SQL 才能读到参数表
+        Map<String, Object> params =
+                ((AbstractWrapper<AiInterview, ?, ?>) captor.getValue()).getParamNameValuePairs();
+        assertTrue(params.containsValue("iv-2"), "应删掉未引用的 iv-2，实际绑定: " + params);
+        assertFalse(params.containsValue("iv-1"), "不能把仍被别的会话引用的 iv-1 一起删掉，实际绑定: " + params);
+    }
+
+    @Test
+    @DisplayName("级联删除面试：interviewIds 为空/为 null 时是空操作")
+    void deleteInterviews_emptyIds_doesNothing() {
+        service.deleteInterviews(null, "conv-1");
+        service.deleteInterviews(List.of(), "conv-1");
+
+        verifyNoInteractions(interviewMapper, minioService);
     }
 }

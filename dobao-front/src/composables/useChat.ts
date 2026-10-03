@@ -4,7 +4,7 @@ import { backendUrl as DEFAULT_BACKEND_URL } from '@/config'
 import { AGENTS, SUPPORTED_FILE_TYPES, STREAM_TYPES, AUDIO_EXTENSIONS } from '@/utils/constants'
 import { generateId, formatFileSize } from '@/utils/format'
 import { renderMarkdown, processReferences, processRecommendations } from '@/utils/markdown'
-import { useInterview, createInterviewSession } from '@/composables/useInterview'
+import { useInterview, createInterviewSession, isTerminalInterviewStatus } from '@/composables/useInterview'
 import {
   testConnection as apiTestConnection,
   loadChats as apiLoadChats,
@@ -161,14 +161,23 @@ export function useChat() {
         target.agentType = sessionData.agentType
         target.fileid = sessionData.fileid
         target.messages = []
+        // 只用来决定"标题要不要按气泡文案覆盖"（见下方注释），
+        // 面试分支本身一律按**消息**判断（msg.interviewId）：会话级开关会漏判 ——
+        // SessionController.getSession 的 agentType 取的是第一行（按 create_time asc），
+        // "先在会话里聊一句、再在同一会话里跑面试"时它是 chat，面试那条消息就走不到面试分支。
+        const isInterviewSession = sessionData.agentType === 'interview'
 
         if (sessionData.messages && Array.isArray(sessionData.messages)) {
-          sessionData.messages.forEach(msg => {
+          // 面试消息要按 interviewId 逐条 await 还原状态/报告，forEach 里没法 await
+          for (const msg of sessionData.messages) {
             if (msg.question) {
               target.messages.push({
                 id: 'user_' + msg.id,
                 role: 'user',
-                content: msg.question,
+                // 面试消息的 question 是录音文件名（侧边栏标题要它），
+                // 但用户当时发出去的文案是固定的这一句，回放时保持与实时一致；
+                // 文件名交给下面的录音 chip 呈现
+                content: msg.interviewId ? '请总结这段面试录音' : msg.question,
                 file: !!msg.fileid,
                 fileName: msg.fileid ? (msg.fileName || '已上传文件') : null,
                 thinking: [],
@@ -181,6 +190,31 @@ export function useChat() {
               })
             }
 
+            // 面试消息：AI 气泡挂进度面板，按 interviewId 把状态与报告还原回来
+            if (msg.interviewId) {
+              const interviewMsg: Message = {
+                id: 'assistant_' + msg.id,
+                role: 'assistant',
+                content: '',
+                thinking: [],
+                reference: [],
+                recommend: [],
+                showThinking: false,
+                showReference: false,
+                hasThinking: false,
+                timestamp: msg.createTime ? new Date(msg.createTime).getTime() : Date.now(),
+                interview: reactive(createInterviewSession())
+              }
+              target.messages.push(interviewMsg)
+              const interviewSession = interviewMsg.interview!
+              interviewSession.fileName = msg.fileName || msg.question || null
+              // 顺序执行：先拿一次状态（终态会顺带把报告正文拉回来）
+              await interview.tryRestore(msg.interviewId, interviewSession)
+              continue
+            }
+
+            // 其余消息（含面试会话里没有 interviewId 的历史脏数据）都走普通 assistant 分支，
+            // 渲染 answer/thinking，不再需要单独的退化分支
             if (msg.answer || msg.thinking) {
               const reference = processReferences(msg.reference)
               target.messages.push({
@@ -197,12 +231,31 @@ export function useChat() {
                 timestamp: msg.createTime ? new Date(msg.createTime).getTime() : Date.now()
               })
             }
-          })
+          }
+
+          // 回放结束后，只给"最新一场仍在处理的面试"续订进度流：
+          // 本 composable 的流与轮询都是单句柄（stop()/pollTimer 共享），
+          // 同一会话同时维持多条流会互相打断 —— 这与实时交互的既有约束一致。
+          // 这里不按会话类型收口：内部本来就按 m.interview 过滤，混排会话里的面试消息
+          // 同样需要续订（会话级开关会让它们永远停在回放时的那一次查询结果上）。
+          const pending = target.messages.filter(
+            m => m.interview && !isTerminalInterviewStatus(m.interview.status)
+          )
+          const latest = pending[pending.length - 1]
+          if (latest && latest.interview?.interviewId) {
+            void interview.startById(latest.interview.interviewId, latest.interview, latest.interview.fileName)
+          }
         }
 
-        const firstUserMessage = target.messages.find(m => m.role === 'user')
-        if (firstUserMessage && firstUserMessage.content) {
-          target.title = firstUserMessage.content.substring(0, 20) + (firstUserMessage.content.length > 20 ? '...' : '')
+        // 面试会话的标题由列表接口给出（question=录音文件名），不要用气泡文案覆盖；
+        // 混排会话（首行是 chat、里面有面试消息）这里仍按普通会话处理，不去覆盖列表接口已经
+        // 给好的标题 —— 面试消息的用户气泡文案是固定的一句"请总结这段面试录音"，
+        // 拿它当标题会把用户原本的会话标题冲掉。
+        if (!isInterviewSession) {
+          const firstUserMessage = target.messages.find(m => m.role === 'user')
+          if (firstUserMessage && firstUserMessage.content) {
+            target.title = firstUserMessage.content.substring(0, 20) + (firstUserMessage.content.length > 20 ? '...' : '')
+          }
         }
       }
     }
@@ -427,7 +480,8 @@ export function useChat() {
     try {
       // 进度由 InterviewPanel 直接读这条消息自己的 reactive 对象实时渲染，
       // 这里 await 到整场结束只是为了控制"处理中"的按钮状态
-      await interview.start(file, session)
+      // 带上当前会话ID：后端据此在 ai_session 写一行，这场面试才会进入会话历史
+      await interview.start(file, session, currentChatId.value)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (session.stopped) {

@@ -74,6 +74,20 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
+    @DisplayName("首次上传：插入会话行之后立刻写一次'进行中'占位摘要（会话行永不为 NULL 的不变式）")
+    void recordUploaded_insertPath_writesRunningPlaceholderSummary() {
+        when(sessionService.getOne(any())).thenReturn(null);
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
+
+        recorder.recordUploaded("conv-1", "iv-1", "interView.m4a");
+
+        // 插入成功之后必须补一条摘要：否则这场面试在报告生成之前 answer 一直是 NULL ——
+        // 而幂等命中已有记录时不会重跑状态机，那一行就再也没人回填
+        assertEquals("面试总结进行中…", boundValue(captureUpdate(), "answer"));
+        verify(sessionService).saveQuestion(any());
+    }
+
+    @Test
     @DisplayName("同一 (会话, 面试) 已存在：只按主键做列级刷新 update_time，不重复插行")
     void recordUploaded_existingRow_onlyTouchesTime() {
         AiSession existing = new AiSession();

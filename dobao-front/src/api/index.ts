@@ -217,16 +217,22 @@ const unwrap = <T>(result: ApiResult<T>, fallback: string): T => {
  *
  * 注意这里是**普通请求**而不是流式：multipart 落 MinIO 本身就要 1~3 秒，
  * 上传成功后前端立刻去开 SSE 流（见 `streamInterview`）。
+ *
+ * `conversationId` 是"这场面试属于哪个会话"的唯一凭据：带上它，后端才会在
+ * `ai_session` 里写一行，刷新/换设备后仍能从会话列表找到并还原这场面试。
  */
 export const uploadInterviewAudio = async (
   backendUrl: string,
   file: File,
+  conversationId?: string | null,
   signal?: AbortSignal
 ): Promise<InterviewUploadVo> => {
   const formData = new FormData()
   formData.append('file', file)
+  // 为空时不能拼出 `?conversationId=`：空串会被后端当成"有值但为空"，这里直接不带查询串
+  const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''
 
-  const response = await fetch(`${backendUrl}/interview/upload`, {
+  const response = await fetch(`${backendUrl}/interview/upload${query}`, {
     method: 'POST',
     body: formData,
     signal

@@ -36,17 +36,22 @@
 |---|---|---|
 | 前置：测试依赖 | ✅ | `2869951` |
 | Task 1 面试会话写入器 | ✅ 规范 PASS + 质量 APPROVE（5 条 Important 整改后复审 5/5 变异被杀死） | `27e1845` → `ecb9df5` → `162e83b` |
-| Task 2 上传即写会话行 | ✅ 实现完成（3 用例绿 + 13 用例回归绿）；**规范/质量审查待补** | `ff5b902` |
-| Task 3 异步回填摘要 | ⏳ 实现完成（4 用例绿 + 18 用例回归绿）；质量审查中；**提交压后**（见下） | 未提交 |
-| Task 7 前端带 conversationId | ⏳ 进行中 | 未提交 |
-| Task 4 / 5 / 6 / 8 / 9 | ⏳ | |
+| Task 2 上传即写会话行 | ✅ 已实现（含最终审查整改：幂等命中按状态回填摘要） | 未提交 |
+| Task 3 异步回填摘要 | ✅ 已实现（含最终审查整改：发布终态加防护） | 未提交 |
+| Task 4 读取路径带 interviewId | ✅ 已实现 | 未提交 |
+| Task 5 会话列表分页去重 | ✅ 已实现 | 未提交 |
+| Task 6 删除会话级联清理 | ✅ 已实现（含最终审查整改：仍被别的会话引用时只解引用） | 未提交 |
+| Task 7 前端带 conversationId | ✅ 已实现 | 未提交 |
+| Task 8 前端还原面试面板 | ✅ 已实现（含最终审查整改：分支改为按消息判定） | 未提交 |
+| Task 9 端到端手工验收 | ⏳ 待用户环境验收（需要百炼 key + MinIO + 浏览器） | — |
 
-**为什么 Task 3 与前端任务的提交压后**：工作区里有一批**上一轮未提交的重构**（工作区版 `InterviewReport` 是新结构 `qaList/referenceAnswers/summary`，HEAD 还是旧的 `knowledgeTopics/transcript`；另有 `InterviewProgressHub`、`InterviewTaskService`、`useInterview.ts`、`types/index.ts` 等）。
+**当前状态（2026-10 最终整体审查后）**：Task 1~8 均已落地并只有单元测试覆盖，**全部尚未提交**；Task 9 的浏览器手工验收需要用户环境。最终审查提出的 5 项修复已处理完毕（混排会话按消息判定、幂等命中回填摘要、删除会话的引用保护、`fileid` 多态语义注释、日志忽略与终态推送防护）。
+
+**为什么 Task 2~8 的提交压后**：工作区里有一批**上一轮未提交的重构**（工作区版 `InterviewReport` 是新结构 `qaList/referenceAnswers/summary`，HEAD 还是旧的 `knowledgeTopics/transcript`；另有 `InterviewProgressHub`、`InterviewTaskService`、`useInterview.ts`、`types/index.ts` 等）。
 用户明确"先不提交"这批改动，因此：
-- Task 3 若此刻提交，其补丁引用 `report.referenceAnswers()`，在 HEAD 上编译不过 → 会产出坏提交，故**实现与测试照做，提交压后**；
+- Task 3 若单独提交，其补丁引用 `report.referenceAnswers()`，在 HEAD 上编译不过 → 会产出坏提交，故**实现与测试照做，提交压后**；
 - Task 7/8 的文件（`useInterview.ts`/`useChat.ts`）混着同一批未提交改动，同样只改工作区、不提交；
-- Task 4/5/6 要碰的 `SessionController`/`MessageVO`/`MinioService` 在 HEAD 上**是干净的**，可以正常逐任务提交。
-等基线落地后，Task 3 应以**整文件**提交（那时同文件内的无关 hunk 已随基线提交，不会再被带走）。
+- Task 2/4/5/6 的工作区文件同样已与上一轮重构混在一起，一律等基线落地后**按整文件**提交。
 
 **⚠️ 验证方式的例外（需要你知情）**：Task 7 / Task 8 是前端改动，仓库里没有测试框架。本计划**不引入 vitest**（那会把一个"接上历史"的需求膨胀成"搭一套前端测试基建"）。这两个任务的验证方式是 `npm run type-check` + Task 9 的浏览器手工验收。若你希望引入前端测试框架，请在开始前告知，我会把 Task 7/8 改写成 TDD 形式。
 

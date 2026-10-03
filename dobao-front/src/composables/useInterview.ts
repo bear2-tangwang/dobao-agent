@@ -50,12 +50,25 @@ import type {
 /**
  * 兜底轮询参数。
  *
- * <p>SSE 是主通道，轮询只在"流抛错 / 流断在非终态"时才启动；后端又把 snapshot 帧补成了
- * 与 status 接口同一形状（阶段、文案、句数都在），正常路径根本走不到这里，所以间隔可以从容。
+ * <p>SSE 是主通道，轮询只在"流重连也失败"时才启动；首轮间隔取 {@value #POLL_INITIAL_MS} 毫秒：
+ * 实测单个阶段（问答整理、报告收尾）可能只有十几秒，间隔太长会整段错过，
+ * 上限也不再放到 45 秒（那等于用户的每一步都慢半拍）。
  */
-const POLL_INITIAL_MS = 15000
-const POLL_MAX_MS = 45000
+const POLL_INITIAL_MS = 5000
+const POLL_MAX_MS = 30000
 const POLL_BACKOFF = 1.4
+
+/**
+ * 断流后的重连退避（毫秒）。
+ *
+ * <p>长连接被代理/tab 挂起掐断是常态，而重连是**零成本**的：后端每次连接都会先补一帧
+ * snapshot（当前状态、句数、说话人数都在），所以重连不会丢阶段、也不会重复记步骤
+ * （步骤按语义 key 去重）。用尽这些退避仍然拿不到终态，才降级为轮询。
+ */
+const STREAM_RETRY_DELAYS_MS = [1000, 3000, 6000, 10000]
+
+/** 退避数组取值的类型兜底（实际上不会用到：走到这里时 attempt 一定在范围内） */
+const STREAM_RETRY_FALLBACK_MS = 10000
 
 /** 各状态在兜底时对应哪个步骤 key（做去重用） */
 const STATUS_STEP_KEY: Record<string, InterviewStepKey> = {
@@ -68,6 +81,14 @@ const STATUS_STEP_KEY: Record<string, InterviewStepKey> = {
 }
 
 const TERMINAL_STATUSES: string[] = [INTERVIEW_STATUS.READY, INTERVIEW_STATUS.FAILED]
+
+/**
+ * 是不是终态（READY / FAILED）。
+ *
+ * <p>历史回放时用它决定"要不要再订阅进度流"：已经跑完或已经失败的场次
+ * 只需要一次状态拉取，不该为每条历史消息都开一条 SSE。
+ */
+export const isTerminalInterviewStatus = (status: string): boolean => TERMINAL_STATUSES.includes(status)
 
 /**
  * 一场面试的初始 session。
@@ -150,9 +171,10 @@ export function useInterview(backendUrl: { value: string }) {
    * 上传音频并开始处理，进度写进调用方给的 session。
    *
    * @param session 这条面试消息自己的 session（就地修改，不替换）
+   * @param conversationId 当前会话ID：后端据此把这场面试写进 ai_session（历史可见/可还原）
    * @throws Error 前端校验不通过、或上传失败（调用方负责提示用户）
    */
-  const start = async (file: File, session: InterviewSession) => {
+  const start = async (file: File, session: InterviewSession, conversationId?: string | null) => {
     validateAudio(file)
     stop()
 
@@ -165,7 +187,7 @@ export function useInterview(backendUrl: { value: string }) {
     abortController = new AbortController()
     let uploaded: InterviewUploadVo
     try {
-      uploaded = await uploadInterviewAudio(backendUrl.value, file, abortController.signal)
+      uploaded = await uploadInterviewAudio(backendUrl.value, file, conversationId, abortController.signal)
     } finally {
       session.uploading = false
     }
@@ -235,27 +257,63 @@ export function useInterview(backendUrl: { value: string }) {
     }
     let streamError: unknown = null
     try {
-      await runStream(session)
+      await runStreamWithReconnect(session)
     } catch (error) {
       streamError = error
     }
-    if (session.status === INTERVIEW_STATUS.READY) {
+    if (session.status === INTERVIEW_STATUS.READY || session.errorMsg || session.stopped) {
       return
     }
-    if (streamError) {
-      // 流不可用（后端未实现 / 网络中断）时明确告诉用户，不要静默假死
-      const detail = streamError instanceof Error ? streamError.message : String(streamError)
-      console.warn('面试进度流中断，降级为轮询:', detail)
-      session.degraded = true
-    }
+    // 走到这里说明流没能把这场面试带到终态。**无论"正常结束"还是报错都算降级**：
+    // 早期实现只在抛错时置位，流被中间层静默掐断时页面会一直冻在最后一条步骤上，
+    // 用户完全看不出发生了什么。
+    const detail = streamError instanceof Error ? streamError.message : String(streamError ?? '进度流已结束')
+    console.warn('面试进度流中断，降级为轮询:', detail)
+    session.degraded = true
     await startPolling(session)
   }
 
   /**
+   * 读流 + 断线重连，直到终态、用户停止、或重试次数用尽。
+   *
+   * <p>为什么不是"断了就直接轮询"：轮询最快也要 5 秒一轮，而重连是即时的，
+   * 且后端连接时会补 snapshot，两者配合最省事也最不容易让用户看到"卡住"。
+   */
+  const runStreamWithReconnect = async (session: InterviewSession) => {
+    let lastError: unknown = null
+    for (let attempt = 0; ; attempt++) {
+      if (session.stopped || session.errorMsg) {
+        return
+      }
+      try {
+        await runStream(session)
+      } catch (error) {
+        lastError = error
+      }
+      if (session.status === INTERVIEW_STATUS.READY || session.stopped || session.errorMsg) {
+        return
+      }
+      if (attempt >= STREAM_RETRY_DELAYS_MS.length) {
+        throw lastError ?? new Error('进度流多次中断')
+      }
+      await sleep(STREAM_RETRY_DELAYS_MS[attempt] ?? STREAM_RETRY_FALLBACK_MS)
+    }
+  }
+
+  /** 重连退避用的等待（不走 pollTimer：那个句柄归轮询与 stop 管理） */
+  const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+  /**
    * 读 SSE 流，直到终态或流结束。
    *
-   * 后端发的是**具名事件**：`event: progress` + `data: {...}`，
-   * 与对话接口的 `{"type": ...}` 载荷不同，所以这里单独一套解析。
+   * 后端发的是**规范 SSE**：`event: progress` + `data: {json}` + 空行，
+   * 心跳是注释行 `:ping`；与对话接口的 `{"type": ...}` 载荷不同，所以这里单独一套解析。
+   *
+   * <p><b>不要再"容忍"非规范帧</b>：2026-10 修过一个问题 —— 后端曾经自己拼好帧文本再发，
+   * 被 Spring MVC 二次包成 `data:event: progress`，这里 `JSON.parse` 直接失败、
+   * 所有事件被静默丢弃。修复方向是让后端输出结构化事件（见 `InterviewProgressHub`），
+   * 并加了 `InterviewProgressStreamIT` 断言线上字节；前端只要按规范解析即可，
+   * 遇到解析不了的内容只记一条 warn，不要试图猜格式。
    */
   const runStream = async (session: InterviewSession) => {
     const id = session.interviewId
@@ -460,6 +518,10 @@ export function useInterview(backendUrl: { value: string }) {
         const status = await getInterviewStatus(backendUrl.value, session.interviewId)
         applyStatus(session, status)
         if (TERMINAL_STATUSES.includes(status.status)) {
+          // 已经就绪：直接把报告正文拉回来，别再让用户点一次"载入报告内容"
+          if (status.status === INTERVIEW_STATUS.READY || status.reportReady) {
+            await loadReport(session)
+          }
           return
         }
         delay = POLL_INITIAL_MS
@@ -659,18 +721,29 @@ export const formatAudioDuration = (ms: number): string => {
 const oneLine = (text: string | null | undefined): string =>
   text == null || String(text).trim() === '' ? '-' : String(text).replace(/\s+/g, ' ').trim()
 
+/** 旧版报告（重构前生成）缺少参考回答/总结时的统一提示，与后端 InterviewReportRenderer 同文案 */
+const LEGACY_REPORT_HINT = '本场报告生成于旧版本，未包含本节内容；重新生成后即可看到。'
+
 /**
  * 结构化报告 → Markdown。
  *
- * <p>2026-10 重构后**恢复展示时间戳**：问答清单不再由模型抽取，Q 与 A 都是后端
- * `QaListBuilder` 从转写句子直接格式化出来的逐字原文，毫秒值也直接取自真实句子，
- * 因此时间戳是可信的定位信息 —— 与后端 `InterviewReportRenderer` 保持同一口径。
+ * <p>2026-10 重构后报告固定三节：**问答清单 / 参考回答 / 面试总结**。
+ * 原「知识点清单」「待补充知识点」合并进总结，「完整对话」附录整体删除
+ * （逐句原文仍在后端的 `transcript_json`，报告不再重复携带）。
+ *
+ * <p>问答清单仍<b>恢复展示时间戳</b>：Q 与 A 都是后端 `QaListBuilder` 从转写句子
+ * 直接格式化出来的逐字原文，毫秒值也直接取自真实句子，因此是可信的定位信息 ——
+ * 与后端 `InterviewReportRenderer` 保持同一口径。
+ *
+ * <p>旧版报告（`referenceAnswers` / `summary` 为 null）给出"重新生成"提示，
+ * 与后端渲染器的文案一致，避免同一份报告在页面与下载文件里长得不一样。
  */
 export const reportToMarkdown = (report: InterviewReport): string => {
   const lines: string[] = ['# 面试总结报告', '']
   lines.push(`- 面试编号：${report.interviewId}`)
   lines.push(`- 音频时长：${formatAudioDuration(report.audioDurationMs)}`)
   lines.push(`- 对话条目：${report.qaList?.length ?? 0}`)
+  lines.push(`- 参考回答：${report.referenceAnswers?.length ?? 0} 条`)
   lines.push('')
 
   // 一、问答清单
@@ -680,7 +753,7 @@ export const reportToMarkdown = (report: InterviewReport): string => {
     lines.push('本次面试未获取到可成对的对话内容。', '')
   } else {
     lines.push(
-      '> 按对话轮次逐条列出：面试官的一段发言为一条 Q，紧随其后的候选人发言为对应的 A，两者均为**逐字原文**，未做任何摘要或改写。',
+      '> 整场面试的问答，按对话轮次逐条列出：面试官的一段发言为一条 Q，紧随其后的候选人发言为对应的 A，两者均为**逐字原文**，未做任何摘要或改写。',
       ''
     )
     for (const qa of qaList) {
@@ -693,54 +766,47 @@ export const reportToMarkdown = (report: InterviewReport): string => {
     }
   }
 
-  // 二、知识点清单
-  lines.push('## 二、知识点清单', '')
-  const topics = report.knowledgeTopics ?? []
-  if (topics.length === 0) {
-    lines.push('本次面试未提炼出可确认的知识点。', '')
+  // 二、参考回答（只覆盖技术问题）
+  lines.push('## 二、参考回答', '')
+  const referenceAnswers = report.referenceAnswers
+  if (referenceAnswers == null) {
+    lines.push(LEGACY_REPORT_HINT, '')
+  } else if (referenceAnswers.length === 0) {
+    lines.push('本次面试未识别出需要给出参考回答的技术问题。', '')
   } else {
-    for (const topic of topics) {
-      lines.push(`### ${oneLine(topic.topic)}`, '')
-      for (const point of topic.points ?? []) {
-        lines.push(`- ${oneLine(point)}`)
-      }
-      if (topic.relatedQaIds && topic.relatedQaIds.length > 0) {
-        lines.push(`- 出自：${topic.relatedQaIds.join('、')}`)
-      }
-      lines.push('')
+    lines.push(
+      '> 下列参考回答由模型根据问答清单生成，**仅供复盘参考**，不代表标准答案；编号对应第一节的问答条目。',
+      ''
+    )
+    for (const item of referenceAnswers) {
+      lines.push(`**${oneLine(item.qaId)}** ${oneLine(item.question)}`, '')
+      lines.push(`**参考回答** ${oneLine(item.answer)}`, '')
     }
   }
 
-  // 三、待补充知识点
-  lines.push('## 三、待补充知识点', '')
-  const gaps = report.knowledgeGaps ?? []
-  if (gaps.length === 0) {
-    lines.push('本次面试未发现明显需要补充的知识点。', '')
+  // 三、面试总结（两行短列表 + 约 100 字总结）
+  lines.push('## 三、面试总结', '')
+  const summary = report.summary
+  if (summary == null) {
+    lines.push(LEGACY_REPORT_HINT, '')
   } else {
-    for (const gap of gaps) {
-      lines.push(`### ${oneLine(gap.point)}`, '')
-      lines.push(`- 本次表现：${oneLine(gap.performance)}`)
-      lines.push(`- 为什么补：${oneLine(gap.why)}`)
-      const directions = gap.directions ?? []
-      if (directions.length > 0) {
-        lines.push('- 补充方向：')
-        for (const direction of directions) {
-          lines.push(`  - ${oneLine(direction)}`)
-        }
+    const covered = (summary.coveredTopics ?? []).filter((t) => t && t.trim() !== '')
+    const gaps = (summary.gapTopics ?? []).filter((t) => t && t.trim() !== '')
+    if (covered.length === 0 && gaps.length === 0 && !summary.summary) {
+      lines.push('本次面试未生成总结。', '')
+    } else {
+      if (covered.length > 0) {
+        lines.push(`- 本轮涉及知识点：${covered.map((t) => t.trim()).join('、')}`)
       }
-      lines.push('')
-    }
-  }
-
-  // 四、完整对话
-  lines.push('## 四、完整对话', '')
-  const transcript = report.transcript ?? []
-  if (transcript.length === 0) {
-    lines.push('本次面试未获取到文字稿。', '')
-  } else {
-    lines.push('> 以下是转写稿全文（逐句原话，未做任何改写），用于核对问答清单是否完整。', '')
-    for (const line of transcript) {
-      lines.push(`**${oneLine(line.role)}** [${formatTimestamp(line.beginMs)}] ${oneLine(line.text)}`, '')
+      if (gaps.length > 0) {
+        lines.push(`- 后续需补充：${gaps.map((t) => t.trim()).join('、')}`)
+      }
+      if (covered.length > 0 || gaps.length > 0) {
+        lines.push('')
+      }
+      if (summary.summary && summary.summary.trim() !== '') {
+        lines.push(oneLine(summary.summary), '')
+      }
     }
   }
 

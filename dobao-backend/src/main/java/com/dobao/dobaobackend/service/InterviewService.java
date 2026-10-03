@@ -3,6 +3,7 @@ package com.dobao.dobaobackend.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.dobao.dobaobackend.config.InterviewProperties;
 import com.dobao.dobaobackend.entity.AiInterview;
+import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.FileInfo;
 import com.dobao.dobaobackend.entity.record.InterviewStatus;
 import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
@@ -23,7 +24,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -57,6 +60,7 @@ public class InterviewService {
     private final InterviewTaskService taskService;
     private final ObjectMapper objectMapper;
     private final InterviewSessionRecorder sessionRecorder;
+    private final AiSessionService sessionService;
 
     /**
      * 上传面试录音。
@@ -91,6 +95,7 @@ public class InterviewService {
             log.info("音频内容命中已有记录，直接复用: audioHash={}, interviewId={}, status={}",
                     audioHash, existing.getInterviewId(), existing.getStatus());
             sessionRecorder.recordUploaded(conversationId, existing.getInterviewId(), existing.getFileName());
+            backfillReusedSummary(existing);
             return new InterviewUploadVO(existing.getInterviewId(), existing.getStatus(),
                     existing.getFileName(), existing.getFileSize(), true);
         }
@@ -122,6 +127,33 @@ public class InterviewService {
 
         return new InterviewUploadVO(record.getInterviewId(), record.getStatus(),
                 record.getFileName(), record.getFileSize(), false);
+    }
+
+    /**
+     * 复用时补齐会话摘要。
+     *
+     * <p>命中已有记录时不会再走状态机（既不重跑转写也不重跑分析），所以这场面试的会话行
+     * 不会有人替它回填摘要 —— 只能在这里按它当前的状态补一次，否则 {@code answer} 会永远停在
+     * "进行中"占位（并作为一条没有配对回答的 UserMessage 进 chat memory）。
+     */
+    private void backfillReusedSummary(AiInterview existing) {
+        String interviewId = existing.getInterviewId();
+        if (InterviewStatus.READY.name().equals(existing.getStatus())) {
+            try {
+                InterviewReport report = report(interviewId);
+                sessionRecorder.markReady(interviewId,
+                        report.qaList() == null ? 0 : report.qaList().size(),
+                        report.referenceAnswers() == null ? 0 : report.referenceAnswers().size());
+            } catch (Exception e) {
+                // 报告 JSON 解析不了也要给个完成的说法，不能让这行停在"进行中"
+                log.warn("复用记录的报告不可解析，按无计数回填完成摘要: interviewId={}, err={}",
+                        interviewId, e.getMessage());
+                sessionRecorder.markReady(interviewId, 0, 0);
+            }
+            return;
+        }
+        // FAILED 不会走到这里（命中条件排除了它：失败会重新提交转写）；其余状态都还在处理中
+        sessionRecorder.markRunning(interviewId);
     }
 
     /**
@@ -228,6 +260,79 @@ public class InterviewService {
                 record.getFileId(), extractFileType(record.getFileName()));
         log.info("重试：重新提交转写: interviewId={}, objectName={}", interviewId, objectName);
         taskService.retryTranscriptionAsync(interviewId, objectName);
+    }
+
+    /**
+     * 级联删除若干场面试：<b>先删 MinIO 对象，再删 ai_interview 记录</b>。
+     *
+     * <p>顺序是刻意的：对象删除失败就抛异常、由调用方（删除会话）的事务整体回滚，
+     * 用户看到"删除失败"；而 MinIO 的 removeObject 对不存在的 key 是幂等的，
+     * 所以"对象已删、事务回滚"之后再重试一次就能收敛。反过来先删库，则可能出现
+     * "记录没了、录音还在 MinIO 里"这种既不可见又删不掉的状态。
+     *
+     * <p><b>本方法要求调用方已开启事务</b>：它自己不带 {@code @Transactional}，
+     * "先删对象后删库"的原子性靠 {@code SessionController.deleteSession} 的事务提供。
+     * 直接调用它（没有外层事务）会退化成两步各自提交，中途失败就留下半状态。
+     *
+     * <p><b>仍被别的会话引用时只解引用</b>：同一段录音可以在多个会话里各上传一次
+     * （音频哈希幂等命中同一个 interviewId，见 {@link #upload}），删其中一个会话不该
+     * 带走另一个会话仍在用的录音与报告 —— 那种情况下只跳过删除（不删 MinIO 对象、
+     * 不删 {@code ai_interview} 行），由删掉会话行本身来完成"解引用"。
+     *
+     * @param interviewIds   面试ID（会话行里 agent_type=interview 的 fileid）；可为空
+     * @param conversationId 正在被删除的那个会话（用于判断这场面试是否还被别的会话引用）
+     */
+    public void deleteInterviews(List<String> interviewIds, String conversationId) {
+        if (interviewIds == null || interviewIds.isEmpty()) {
+            return;
+        }
+        List<String> objectNames = new ArrayList<>();
+        // 真正要删的那批：被别的会话引用的不能进来，否则 delete 会把别人在用的记录删掉
+        List<String> deletedIds = new ArrayList<>();
+        for (String interviewId : interviewIds) {
+            if (referencedByOtherConversation(interviewId, conversationId)) {
+                log.info("面试仍被其它会话引用，仅解引用不删对象与记录: interviewId={}, conversationId={}",
+                        interviewId, conversationId);
+                continue;
+            }
+            AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
+                    .eq(AiInterview::getInterviewId, interviewId));
+            if (record == null) {
+                // 记录本就不存在：没有对象可删，但归入本批（delete 命中 0 行），语义仍是"这场归我们删"
+                deletedIds.add(interviewId);
+                continue;
+            }
+            if (StringUtils.hasText(record.getReportFileName())) {
+                objectNames.add(record.getReportFileName());
+            }
+            if (StringUtils.hasText(record.getFileId()) && StringUtils.hasText(record.getFileName())) {
+                objectNames.add(FileManageService.generateObjectName(
+                        record.getFileId(), extractFileType(record.getFileName())));
+            }
+            deletedIds.add(interviewId);
+        }
+
+        for (String objectName : objectNames) {
+            try {
+                minioService.deleteFile(objectName);
+            } catch (Exception e) {
+                throw new IllegalStateException("删除面试文件失败: " + objectName + ", " + e.getMessage(), e);
+            }
+        }
+
+        if (!deletedIds.isEmpty()) {
+            interviewMapper.delete(new LambdaQueryWrapper<AiInterview>()
+                    .in(AiInterview::getInterviewId, deletedIds));
+        }
+        log.info("面试记录已删除: interviewIds={}, 对象数={}", deletedIds, objectNames.size());
+    }
+
+    /** 这个 interviewId 是否仍被"别的会话"引用（同一录音可被多个会话各上传一次） */
+    private boolean referencedByOtherConversation(String interviewId, String conversationId) {
+        return sessionService.count(new LambdaQueryWrapper<AiSession>()
+                .eq(AiSession::getAgentType, InterviewSessionRecorder.AGENT_TYPE)
+                .eq(AiSession::getFileid, interviewId)
+                .ne(AiSession::getSessionId, conversationId)) > 0;
     }
 
     /**

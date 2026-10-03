@@ -62,6 +62,8 @@ export interface SessionMessage {
   fileType?: string
   fileSize?: number
   createTime?: string
+  /** 面试会话的面试ID（后端在 agent_type=interview 的会话行上填 = fileid） */
+  interviewId?: string
 }
 
 /** Session detail */
@@ -90,26 +92,24 @@ export interface InterviewQaItem {
   answerEndMs: number
 }
 
-/** 知识点主题（对应后端 KnowledgeTopic） */
-export interface InterviewKnowledgeTopic {
-  topic: string
-  points: string[]
-  relatedQaIds: string[]
+/** 技术问题的参考回答（对应后端 ReferenceAnswer，报告第二部分） */
+export interface InterviewReferenceAnswer {
+  /** 出自哪条问答，对应第一节的 Q001（后端已校验过编号真实存在） */
+  qaId: string
+  /** 从面试官原话里收敛出的技术问题 */
+  question: string
+  /** 参考回答（模型生成，仅供复盘参考，不是标准答案） */
+  answer: string
 }
 
-/** 待补充知识点（对应后端 KnowledgeGap） */
-export interface InterviewKnowledgeGap {
-  point: string
-  performance: string
-  why: string
-  directions: string[]
-}
-
-/** 完整对话的一行（对应后端 TranscriptLine，报告第四部分） */
-export interface InterviewTranscriptLine {
-  role: string
-  beginMs: number
-  text: string
+/** 面试总结（对应后端 ReportSummary，报告第三部分） */
+export interface InterviewReportSummary {
+  /** 本轮涉及的知识点（短词） */
+  coveredTopics: string[] | null
+  /** 后续需要补充的知识点（短词） */
+  gapTopics: string[] | null
+  /** 约 100 字的总结性文字 */
+  summary: string | null
 }
 
 /** 结构化报告（对应后端 InterviewReport / report_json） */
@@ -117,11 +117,12 @@ export interface InterviewReport {
   interviewId: string
   audioDurationMs: number
   generatedAt: string | null
+  /** 一、问答清单：整场面试问答，Q/A 均为逐字原文 */
   qaList: InterviewQaItem[] | null
-  knowledgeTopics: InterviewKnowledgeTopic[] | null
-  knowledgeGaps: InterviewKnowledgeGap[] | null
-  /** 第四部分：整场对话逐句原话（未改写），用于核对问答清单是否完整 */
-  transcript: InterviewTranscriptLine[] | null
+  /** 二、参考回答：只含技术问题；旧版报告为 null */
+  referenceAnswers: InterviewReferenceAnswer[] | null
+  /** 三、面试总结；旧版报告为 null */
+  summary: InterviewReportSummary | null
 }
 
 /** 状态接口返回（对应后端 InterviewStatusVO） */

@@ -48,6 +48,10 @@ public class InterviewSessionRecorder {
     /**
      * 记录"某会话里开始了某场面试"。幂等：同一 (会话, 面试) 只保留一行。
      *
+     * <p>新建那行之后会立刻写一次"进行中"占位摘要，因此<b>本类是 {@code answer} 列的唯一写入者</b>，
+     * 且"有会话行就有非空 answer"是本类维持的不变式（幂等命中已有行的分支不重写 answer —— 那一行
+     * 可能已经是"已完成"，具体回填由 {@code InterviewService#backfillReusedSummary} 按状态补）。
+     *
      * <p>会话ID在入口统一 {@code trim()}（见下方注释）：这是本需求唯一的会话行写入点，
      * 收口在这里不会漏；trim 后为空则退化为"只写 ai_interview"。
      *
@@ -80,6 +84,14 @@ public class InterviewSessionRecorder {
                 .fileid(interviewId)
                 .agentType(AGENT_TYPE)
                 .build());
+        // 插入成功后立刻写一次"进行中"占位摘要，让"会话行的 answer 永不为 NULL"成为
+        // 本类（唯一写入者）的不变式。两个理由：
+        //  ① 上传到报告就绪之间是分钟级的转写 + 分析，列表/详情会读到 NULL，只能显示空白；
+        //  ② 幂等命中已有记录时不会重跑状态机（既不重转写也不重分析），那一行不会有任何人
+        //     替它回填摘要 —— 只能由 InterviewService 按当前状态补一次（见
+        //     InterviewService#backfillReusedSummary），而它需要这里先有个兜底值。
+        // 重试路径由 markRunning 覆盖同一列，语义一致。
+        updateSummary(interviewId, RUNNING_SUMMARY);
         log.info("面试会话已创建: conversationId={}, interviewId={}, fileName={}",
                 sessionId, interviewId, fileName);
     }

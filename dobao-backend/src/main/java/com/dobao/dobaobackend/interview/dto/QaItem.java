@@ -7,7 +7,7 @@ package com.dobao.dobaobackend.interview.dto;
  * {@code topics} 三个字段全部删除 —— 它们的存在前提是"模型读了这一段并做了摘要与归纳"。
  * 现在问答清单改为由转写句子列表直接格式化（见 {@code QaListBuilder}），
  * 因此：问题与回答都是<b>逐字原话</b>，没有任何改写，也没有模型给的知识点标签
- * （知识点统一由报告阶段那一次调用产出，见 {@code InterviewReportGenerator}）。
+ * （参考回答与总结由报告阶段那一次调用产出，见 {@code InterviewReportGenerator}）。
  *
  * <p><b>时间戳全部来自真实句子数据</b>：不再有"模型输出句子序号 + 回填"这一步，
  * 毫秒值直接取问答两侧首句的 {@code begin_ms} 与末句的 {@code end_ms}，
@@ -18,7 +18,7 @@ package com.dobao.dobaobackend.interview.dto;
  * 所以岗位介绍、流程说明、改约协调也会各成一条；这是刻意的取舍：
  * 宁可清单长一点、也不漏内容，同时彻底去掉"哪个块该不该调模型"这类判断。
  *
- * @param qaId            编号（全局顺序编号，Q001、Q002…；知识点清单用 {@code 出自：Q002} 引用它）
+ * @param qaId            编号（全局顺序编号，Q001、Q002…；报告第二节「参考回答」用同一个编号引用它）
  * @param question        面试官该轮的发言原文（多句已合并，逐字未改写）
  * @param questionBeginMs 提问首句的起始时间戳（毫秒）
  * @param answer          候选人该轮的发言原文（多句已合并，逐字未改写；无回答时为空串）

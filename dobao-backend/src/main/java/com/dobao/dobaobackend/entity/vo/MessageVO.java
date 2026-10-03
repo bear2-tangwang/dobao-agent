@@ -26,7 +26,13 @@ public class MessageVO {
     private String reference;
     /** 创建时间 */
     private LocalDateTime createTime;
-    /** 关联文件ID */
+    /**
+     * 关联文件ID。
+     *
+     * <p>按 {@code agentType} 解释的多态业务指针：{@code agentType='interview'} 时它存的是
+     * interviewId（见 {@code InterviewSessionRecorder}），不是文件表的主键 —— 这时不要去
+     * {@code ai_file_info} 里查它。
+     */
     private String fileid;
     /** 面试会话的面试ID（agent_type=interview 时 = fileid；其它类型为 null） */
     private String interviewId;

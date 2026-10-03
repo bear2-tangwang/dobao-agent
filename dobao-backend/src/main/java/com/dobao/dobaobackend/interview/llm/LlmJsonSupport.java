@@ -21,7 +21,7 @@ import java.util.Map;
 /**
  * "要 LLM 回 JSON"的统一调用封装。
  *
- * <p>步骤 3/4 现在只剩 2 类调用（角色判定、知识点归纳），形态完全一样：
+ * <p>步骤 3/4 现在只剩 2 类调用（角色判定、报告归纳），形态完全一样：
  * 系统提示 + 用户内容 + JSON schema → 结构化对象。集中在这里的好处是不会出现
  * "有的地方判了截断、有的地方没判"。
  *
@@ -29,7 +29,7 @@ import java.util.Map;
  * {@code maxTokens} 打满、JSON 必然是半截的，此时直接抛
  * {@link LlmOutputTruncatedException}，而不是把半截文本丢给 Jackson 换一个
  * 毫无信息量的 {@code JsonParseException}。原分块抽取链路里这是最可能发生的失败模式
- * （一块要一次吐出多个问答对），2026-10 重构后风险主要落在知识点归纳上。
+ * （一块要一次吐出多个问答对），2026-10 重构后风险主要落在报告归纳上。
  *
  * <p>think 标签不需要在这里处理：{@code BeanOutputConverter} 默认挂的
  * {@code ResponseTextCleaner} 链（Whitespace → ThinkingTag → MarkdownCodeBlock → Whitespace）
@@ -50,13 +50,6 @@ public class LlmJsonSupport {
 
     /**
      * 结构化抽取的默认温度。
-     *
-     * <p><b>为什么不沿用全局的 0.7</b>：实测同一个音频连续跑 5 次，问答对数量在 1 和 2 之间跳、
-     * 待补充知识点在 0 和 1 之间跳（`temperature: 0.7` 来自 {@code application.yml} 的
-     * {@code spring.ai.openai.chat.options}）。问答抽取与知识点归纳都是**信息抽取**任务，
-     * 不是在写文章，采样发散只会让同一份输入产出不同报告 —— 这直接违反需求文档
-     * "抽出问答对数量与实际提问数量偏差 ≤ 2" 与 AC-6 的稳定性要求。
-     *
      * <p>不用 0.0 而用 0.1：0.1 已经能把随机性压到实测一致，同时避免部分服务端
      * 对 temperature=0 的边界处理差异。
      */
@@ -141,7 +134,7 @@ public class LlmJsonSupport {
     /**
      * 构造"抽取专用"的按次选项：低温 + 固定种子 + 可选模型覆盖 + 可选厂商扩展参数。
      *
-     * <p>由调用方（{@code InterviewReportGenerator}，知识点归纳那一次调用）从
+     * <p>由调用方（{@code InterviewReportGenerator}，报告归纳那一次调用）从
      * {@code interview.report.*} 配置组装，
      * 这样"要不要关思考 / 换哪个模型"是配置问题，不需要改代码。
      * 选项会与全局默认合并，所以 {@code maxTokens} 等仍沿用 yml 里的设置。

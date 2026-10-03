@@ -7,6 +7,7 @@ import com.dobao.dobaobackend.entity.AiInterview;
 import com.dobao.dobaobackend.entity.record.InterviewStatus;
 import com.dobao.dobaobackend.interview.InterviewReportGenerator;
 import com.dobao.dobaobackend.interview.InterviewReportRenderer;
+import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
 import com.dobao.dobaobackend.interview.QaListBuilder;
 import com.dobao.dobaobackend.interview.SpeakerRoleResolver;
 import com.dobao.dobaobackend.interview.TranscriptNormalizer;
@@ -70,6 +71,7 @@ public class InterviewTaskService {
     private final ApplicationEventPublisher eventPublisher;
     private final InterviewProgressHub progressHub;
     private final ObjectMapper objectMapper;
+    private final InterviewSessionRecorder sessionRecorder;
 
     /**
      * 异步：取音频 URL（dev 需上传到百炼临时存储）并提交转写任务。
@@ -107,9 +109,17 @@ public class InterviewTaskService {
         // 更新状态为转写中
         updateStatus(interviewId, InterviewStatus.TRANSCRIBING, null);
 
+        // 发送转写中进度通知
+        progressHub.publishProgress(interviewId, "transcribing",
+                "正在准备音频（上传到识别服务）…", null);
+
         // 从 MinIO 取音频地址（dev 走百炼临时存储，prod 走公网地址），再提交转写任务
         String audioUrl = audioUrlProvider.provide(objectName);
+        progressHub.publishProgress(interviewId, "transcribing", "音频已就绪，正在提交转写任务…", null);
+
         String taskId = asrClient.submit(audioUrl, null);
+        progressHub.publishProgress(interviewId, "transcribing",
+                "转写任务已提交，正在等待识别结果（长音频通常 1~5 分钟）…", null);
 
         // 更新面试表，记录转写任务 ID
         interviewMapper.update(null, new LambdaUpdateWrapper<AiInterview>()
@@ -137,7 +147,7 @@ public class InterviewTaskService {
             log.warn("转写超时兜底生效: interviewId={}", task.getInterviewId());
         }
 
-        // 2. 再轮询尚未超时的任务
+        // 2. 在轮询尚未超时的任务
         List<AiInterview> tasks = queryTranscribing(false, timeoutMs);
         if (tasks.isEmpty()) {
             return;
@@ -194,7 +204,7 @@ public class InterviewTaskService {
             return;
         }
 
-        // 结果链接 24 小时失效，必须立刻下载并落库
+        // 结果链接 24 小时失效，必须立刻从百炼临时存储下载并落库
         String asrJson = asrClient.downloadResult(state.transcriptionUrl());
         persistTranscript(task, asrJson);
     }
@@ -250,11 +260,41 @@ public class InterviewTaskService {
     }
 
     /**
+     * 回填会话摘要，**并且吞掉它自己的异常**。
+     *
+     * <p>摘要只是"让这场面试在会话列表里看得见"的辅助信息，它不能反过来影响面试本身：
+     * {@code publishReport} 里任何异常都会被 {@code runAnalysis} 的 catch 接住并把状态置成
+     * FAILED —— 也就是说，如果回填抛异常而这里不拦，一场报告已经生成好的面试会被翻成"失败"。
+     */
+    private void recordSessionSummary(Runnable action) {
+        try {
+            action.run();
+        } catch (Exception e) {
+            // 刻意不按异常类型分级放行：写会话表失败可能以任意运行时异常形态出现
+            // （DataAccessException、lambda 里的 NPE、序列化异常…），而其中的任何一种
+            // 都不允许把一场报告已就绪的面试翻成 FAILED。若只放行"已知类型"，剩下的形态
+            // 会重新变成"成功被翻成失败"的洞 —— 这个洞正是本方法存在的理由。
+            // 所以一律吞掉，但用 ERROR + 完整堆栈记下来，保证这类失败在日志里查得到、能报警。
+            log.error("回填面试会话摘要失败（不影响面试流程本身）: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
      * 统一的状态流转入口（列级更新，让数据库维护 {@code update_time}）。
      *
      * <p>这里同时是 SSE 的推送点：状态是"已经落库的事实"，推给前端只是通知，
      * 所以推送放在 update 之后，推失败也不会影响状态机（前端还有轮询兜底）。
      * 改状态只有本类会做，故不对外开放。
+     *
+     * <p><b>例外：READY 不从这里走</b>。报告就绪时必须把 {@code report_json} /
+     * {@code report_file_url} / {@code report_file_name} 与状态放在同一条 UPDATE 里，
+     * 因此那一处由 {@link #publishReport} 直接写（含会话摘要回填）。所以"状态流转一律走这里"
+     * 指的是失败与进行中的流转，不是字面上的唯一入口。
+     *
+     * <p><b>这里也是会话摘要的回填点</b>：失败分支有八处（提交失败、重试失败、转写超时、
+     * 转写失败、JSON 非法、超时长、分析异常…），逐个挂会漏；挂在唯一入口上，"失败"
+     * 这件事与"摘要写失败"这件事不可能不一致。转写/分析开始时顺手把上一次的失败摘要
+     * 换成"进行中"，避免重试后列表里还挂着旧失败文案。
      *
      * @param errorMsg 失败原因；传 null 会显式清空该列（重试时用得上）
      */
@@ -265,9 +305,19 @@ public class InterviewTaskService {
                 .set(AiInterview::getErrorMsg, errorMsg));
         log.info("状态更新: interviewId={}, status={}, rows={}", interviewId, status, rows);
 
+        if (status == InterviewStatus.FAILED) {
+            recordSessionSummary(() -> sessionRecorder.markFailed(interviewId, errorMsg));
+        } else if (status == InterviewStatus.TRANSCRIBING || status == InterviewStatus.ANALYZING) {
+            recordSessionSummary(() -> sessionRecorder.markRunning(interviewId));
+        }
+        // 其余状态刻意不动摘要：
+        //  - TRANSCRIBED（转写完成、等待分析）与 ANALYZING 是同一个连续过程，这里保持
+        //    "进行中"文案，不写 READY —— 那会让列表提前显示"已完成"，而报告还没生成；
+        //  - READY 由 publishReport 自己写（见方法上方 javadoc 的例外说明）；
+        //  - 其它状态（如 PENDING）本来就不该有摘要，写上反而是噪音。
+
         progressHub.publishStatus(interviewId, status, errorMsg);
     }
-
 
     /**
      * 转写完成事件监听：接上"角色判定 + 问答清单 + 报告生成"。
@@ -324,10 +374,12 @@ public class InterviewTaskService {
         // 2. 状态更新：分析中
         updateStatus(interviewId, InterviewStatus.ANALYZING, null);
 
-        // 3. 拿到转写结果 JSON
+        // 3. 对转写结果 JSON 进行归一化
         NormalizedTranscript transcript = transcriptNormalizer.normalize(record.getTranscriptJson());
 
-        // 4. 角色判定
+        // 4. 角色判定（一次 LLM 调用，几十秒级）：先告诉用户现在卡在哪一步，
+        // 发布进度更新：正在判定说话人角色…
+        progressHub.publishProgress(interviewId, "analyzing", "正在判定说话人角色…", null);
         RoleJudgment judgment = speakerRoleResolver.resolve(transcript);
 
         // 5. 角色判定结果落库
@@ -346,24 +398,30 @@ public class InterviewTaskService {
                 qaItems.size());
 
         // 生成报告 → 渲染 Markdown → 存 MinIO → 落库 → READY ----
-        publishReport(record, transcript, qaItems, judgment.interviewerSpeakerId());
+        publishReport(record, qaItems);
     }
 
     /**
      * 报告落库与落盘。
+     *
+     * <p>包级可见（而不是 private）是为了让 {@code InterviewTaskServiceTest} 能直接
+     * 验证"报告就绪 → 会话摘要回填"这一条规则，不需要绕异步入口。
      */
-    private void publishReport(AiInterview record,
-                               NormalizedTranscript transcript,
-                               List<QaItem> qaItems,
-                               Integer interviewerSpeakerId) {
+    void publishReport(AiInterview record, List<QaItem> qaItems) {
         String interviewId = record.getInterviewId();
 
-        // 发送进度更新：报告生成中
+        // 发送进度更新：报告生成中。
+        // 这是全流程最长的单次等待（报告要吐参考回答 + 总结，实测 1~4 分钟），
+        // 所以文案里写明预期耗时，之后由 hub 心跳持续补"已用 N 秒"
         progressHub.publishProgress(interviewId, "reporting",
-                "正在生成总结报告中…", null);
+                "正在生成参考回答与面试总结（通常 1~3 分钟）…", null);
 
-        InterviewReport report = reportGenerator.generate(record, transcript, qaItems, interviewerSpeakerId);
+        //  1. 调用LLM生成报告
+        InterviewReport report = reportGenerator.generate(record, qaItems);
+        //  2. 渲染 Markdown 文本
         String markdown = reportRenderer.render(report);
+
+        //  3. 序列化报告 JSON 用于落库
         String reportJson;
         try {
             reportJson = objectMapper.writeValueAsString(report);
@@ -375,12 +433,14 @@ public class InterviewTaskService {
         String objectName = "interview-report-" + interviewId + ".md";
         String reportUrl;
         try {
+        //  4. 渲染 Markdown 文本到 MinIO
             reportUrl = minioService.uploadFile(objectName,
                     markdown.getBytes(StandardCharsets.UTF_8), "text/markdown;charset=UTF-8");
         } catch (Exception e) {
             throw new IllegalStateException("报告上传 MinIO 失败: " + e.getMessage(), e);
         }
 
+        //  5. 落库：更新面试记录状态为就绪
         interviewMapper.update(null, new LambdaUpdateWrapper<AiInterview>()
                 .eq(AiInterview::getInterviewId, interviewId)
                 .set(AiInterview::getReportJson, reportJson)
@@ -389,8 +449,27 @@ public class InterviewTaskService {
                 .set(AiInterview::getStatus, InterviewStatus.READY.name())
                 .set(AiInterview::getErrorMsg, null));
 
-        // 落库之后再推终态：前端拿到 complete 就能直接渲染报告正文（不必再请求一次报告接口）
-        progressHub.publishComplete(interviewId, reportUrl, reportJson);
+        // 会话摘要回填：报告正文仍在 report_json，这里只写一行可读摘要给会话列表/详情兜底。
+        // 用 recordSessionSummary 包一层：回填失败绝不能把这场已经生成好报告的面试翻成 FAILED。
+        // 计数前必须对 null 守卫：report_json 会长期保存并被反序列化回来，而 InterviewReport
+        // 的 javadoc 写明"旧报告里该字段为 null"（历史 report_json 里没有 reference_answers /
+        // summary 这两项），所以 qaList / referenceAnswers 真的可能为 null；直接 .size() 会抛 NPE，
+        // 而这里的 NPE 会把一场报告已就绪的面试翻成 FAILED。
+        recordSessionSummary(() -> sessionRecorder.markReady(interviewId,
+                report.qaList() == null ? 0 : report.qaList().size(),
+                report.referenceAnswers() == null ? 0 : report.referenceAnswers().size()));
+
+        // 落库之后再推终态：前端拿到 complete 就能直接渲染报告正文（不必再请求一次报告接口）。
+        // 纵深防御：此刻报告已经在库里是 READY，这里若抛异常会被 runAnalysis 的 catch 接住并
+        // updateStatus(FAILED)，把一场已就绪的面试翻成失败。Hub 内部自带 try/catch，但"推终态"
+        // 与上面那次会话摘要回填是同一类"已就绪之后才做、失败也不该回头改状态"的动作，
+        // 所以这里再包一层（只记 ERROR，不改流程）。
+        try {
+            progressHub.publishComplete(interviewId, reportUrl, reportJson);
+        } catch (Exception e) {
+            log.error("推送报告完成事件失败（不影响面试流程本身）: interviewId={}, err={}",
+                    interviewId, e.getMessage(), e);
+        }
 
         log.info("报告已就绪: interviewId={}, objectName={}, markdownChars={}, url={}",
                 interviewId, objectName, markdown.length(), reportUrl);
