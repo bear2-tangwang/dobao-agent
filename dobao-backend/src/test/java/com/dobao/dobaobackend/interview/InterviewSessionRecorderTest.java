@@ -143,6 +143,26 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
+    @DisplayName("回填时 interviewId 为空：空操作，一行都不碰（防御性分支）")
+    void updateSummary_blankInterviewId_doesNothing() {
+        recorder.markRunning("");
+        recorder.markReady(null, 1, 1);
+        recorder.markFailed("   ", "原因");
+
+        verifyNoInteractions(sessionService);
+    }
+
+    @Test
+    @DisplayName("失败原因为空白：只写'面试总结失败'，不留下悬空的冒号")
+    void markFailed_blankReason_writesPlainText() {
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
+
+        recorder.markFailed("iv-1", "   ");
+
+        assertEquals("面试总结失败", boundValue(captureUpdate(), "answer"));
+    }
+
+    @Test
     @DisplayName("回填只认面试类型的会话行；命中 0 行时也不退化成逐行读-改-写")
     void updateSummary_filtersByAgentTypeAndFileid() {
         when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(false);

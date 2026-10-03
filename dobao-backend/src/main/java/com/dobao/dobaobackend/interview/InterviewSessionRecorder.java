@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
  *   <li>{@code question} = 录音文件名（侧边栏标题取 question，正好显示成文件名）</li>
  *   <li>{@code answer} = 状态摘要（报告正文的唯一来源仍是 {@code ai_interview.report_json}）</li>
  *   <li>{@code fileid} = interviewId —— 沿用本表把 {@code fileid} 当多态业务指针的既有用法
- *       （见设计文档 §2 决策 4）</li>
+ *       （见 {@code docs/plans/2026-10-03-interview-session-history-design.md} §2 决策 4）</li>
  * </ul>
  *
  * <p><b>为什么单独成 Bean</b>：上传写入在 {@link com.dobao.dobaobackend.service.InterviewService}
