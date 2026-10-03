@@ -1,9 +1,9 @@
 package com.dobao.dobaobackend.interview;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
-import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.service.AiSessionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
 /**
  * 面试总结 → {@code ai_session} 的写入器（本需求唯一的会话行写入点）。
@@ -22,8 +21,8 @@ import java.util.List;
  *   <li>{@code agent_type} = {@value #AGENT_TYPE}</li>
  *   <li>{@code question} = 录音文件名（侧边栏标题取 question，正好显示成文件名）</li>
  *   <li>{@code answer} = 状态摘要（报告正文的唯一来源仍是 {@code ai_interview.report_json}）</li>
- *   <li>{@code fileid} = interviewId —— 沿用本表"按 agent_type 解释的业务指针"约定
- *       （见 {@link AiSession#getFileid()} 的注释）</li>
+ *   <li>{@code fileid} = interviewId —— 沿用本表把 {@code fileid} 当多态业务指针的既有用法
+ *       （见设计文档 §2 决策 4）</li>
  * </ul>
  *
  * <p><b>为什么单独成 Bean</b>：上传写入在 {@link com.dobao.dobaobackend.service.InterviewService}
@@ -59,9 +58,11 @@ public class InterviewSessionRecorder {
         }
         AiSession existing = find(conversationId, interviewId);
         if (existing != null) {
-            // 同一会话重复提交同一段录音（音频哈希幂等命中）：只把这场顶到列表最前
-            existing.setUpdateTime(LocalDateTime.now());
-            sessionService.updateById(existing);
+            // 同一会话重复提交同一段录音（音频哈希幂等命中）：只把这场顶到列表最前。
+            // 列级更新（不是整行写回），避免把读到的旧 answer 一起覆盖回去。
+            sessionService.update(new LambdaUpdateWrapper<AiSession>()
+                    .eq(AiSession::getId, existing.getId())
+                    .set(AiSession::getUpdateTime, LocalDateTime.now()));
             log.info("面试会话已存在，仅刷新时间: conversationId={}, interviewId={}", conversationId, interviewId);
             return;
         }
@@ -93,21 +94,30 @@ public class InterviewSessionRecorder {
                 : "面试总结失败");
     }
 
-    /** 按 interviewId 回填所有引用它的面试会话行 */
+    /**
+     * 按 interviewId 回填所有引用它的面试会话行：一条批量 UPDATE（原子、1 条 SQL），
+     * 而不是"查出来再逐行写回"（1+2N 条 SQL，且并发下会丢更新）。
+     */
     private void updateSummary(String interviewId, String answer) {
         if (!StringUtils.hasText(interviewId)) {
+            log.warn("缺少面试ID，跳过会话摘要回填: answer={}", answer);
             return;
         }
-        List<AiSession> rows = sessionService.list(new LambdaQueryWrapper<AiSession>()
+        // IService#update(Wrapper) 返回的是"是否命中至少一行"（SqlHelper.retBool），不是行数
+        boolean updated = sessionService.update(new LambdaUpdateWrapper<AiSession>()
                 .eq(AiSession::getAgentType, AGENT_TYPE)
-                .eq(AiSession::getFileid, interviewId));
-        for (AiSession row : rows) {
-            sessionService.updateAnswer(UpdateAnswerRequest.builder()
-                    .id(row.getId())
-                    .answer(answer)
-                    .build());
+                .eq(AiSession::getFileid, interviewId)
+                .set(AiSession::getAnswer, answer)
+                // 必须显式写 update_time：ai_session 这一列在现有链路里全部来自 JVM 时钟
+                //（saveQuestion/updateAnswer 都用 LocalDateTime.now()）。省掉这行会让 MySQL 的
+                // ON UPDATE CURRENT_TIMESTAMP 写入 UTC，比 JVM 时钟早 8 小时，于是
+                // SessionController 的 update_time desc 排序把这行排到 chat 行后面。
+                .set(AiSession::getUpdateTime, LocalDateTime.now()));
+        if (updated) {
+            log.info("面试会话摘要已回填: interviewId={}, answer={}", interviewId, answer);
+        } else {
+            log.debug("没有会话行引用这场面试，摘要未回填: interviewId={}, answer={}", interviewId, answer);
         }
-        log.info("面试会话摘要已回填: interviewId={}, rows={}, answer={}", interviewId, rows.size(), answer);
     }
 
     private AiSession find(String conversationId, String interviewId) {

@@ -1,13 +1,12 @@
 package com.dobao.dobaobackend.interview;
 
-import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
-import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
-import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.service.AiSessionService;
-import org.apache.ibatis.builder.MapperBuilderAssistant;
+import com.dobao.dobaobackend.testsupport.MybatisPlusTableInfo;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,9 +15,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -33,27 +36,19 @@ import static org.mockito.Mockito.when;
  *
  * <p>用 mock 顶替 {@link AiSessionService}：这里要证明的是"写什么、按什么条件写"，
  * 不是 MyBatis-Plus 的 SQL 能力（项目里没有测试库，见实施计划前置事实）。
+ *
+ * <p>摘要回填必须是<b>一条批量 UPDATE</b>（列级 set），而不是"查出来再逐行写回"：
+ * 前者 1 条 SQL、原子；后者 1+2N 条且并发下丢更新。下面用 wrapper 的 SET/WHERE 片段
+ * 与绑定参数把这一点钉住。
  */
 class InterviewSessionRecorderTest {
 
     private AiSessionService sessionService;
     private InterviewSessionRecorder recorder;
 
-    /**
-     * 让 {@code LambdaQueryWrapper.getTargetSql()} 能解析出列名。
-     *
-     * <p>{@code AiSession} 的 TableInfo 平时由 MyBatis 启动过程注册；纯单测没有 Spring 上下文，
-     * 不手动注册的话，lambda 条件解析会抛 "can not find lambda cache for this entity"。
-     * 只注册元数据，不建连接池、不读库。
-     */
     @BeforeAll
     static void initTableInfo() {
-        if (TableInfoHelper.getTableInfo(AiSession.class) == null) {
-            MybatisConfiguration configuration = new MybatisConfiguration();
-            MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "");
-            assistant.setCurrentNamespace(AiSession.class.getName());
-            TableInfoHelper.initTableInfo(assistant, AiSession.class);
-        }
+        MybatisPlusTableInfo.ensure(AiSession.class);
     }
 
     @BeforeEach
@@ -79,20 +74,25 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
-    @DisplayName("同一 (会话, 面试) 已存在：只刷新时间，不重复插行")
+    @DisplayName("同一 (会话, 面试) 已存在：只按主键做列级刷新 update_time，不重复插行")
     void recordUploaded_existingRow_onlyTouchesTime() {
         AiSession existing = new AiSession();
         existing.setId(11L);
-        existing.setUpdateTime(LocalDateTime.now().minusDays(1));
         when(sessionService.getOne(any())).thenReturn(existing);
 
         recorder.recordUploaded("conv-1", "iv-1", "interView.m4a");
 
         verify(sessionService, never()).saveQuestion(any());
-        ArgumentCaptor<AiSession> captor = ArgumentCaptor.forClass(AiSession.class);
-        verify(sessionService).updateById(captor.capture());
-        assertTrue(captor.getValue().getUpdateTime().isAfter(LocalDateTime.now().minusMinutes(1)),
+        Wrapper<AiSession> wrapper = captureUpdate();
+        String set = setClause(wrapper);
+        assertFalse(set.contains("answer"),
+                "只该刷新 update_time，不能把读到的旧 answer 整行写回，实际 SET: " + set);
+        assertEquals(11L, boundValue(wrapper, "id"), "必须按主键定位这一行，实际 SET: " + set);
+        Object updateTime = boundValue(wrapper, "update_time");
+        assertInstanceOf(LocalDateTime.class, updateTime, "update_time 应显式绑定 JVM 时钟，实际: " + updateTime);
+        assertTrue(((LocalDateTime) updateTime).isAfter(LocalDateTime.now().minusMinutes(1)),
                 "应把 update_time 刷新到现在，列表排序才会浮上来");
+        verify(sessionService, never()).updateById(any());
     }
 
     @Test
@@ -105,48 +105,101 @@ class InterviewSessionRecorderTest {
     }
 
     @Test
-    @DisplayName("回填完成摘要：按 agent_type + fileid 定位，写问答/参考回答条数")
+    @DisplayName("回填完成摘要：一条批量 UPDATE 按 agent_type + fileid 定位，写完整文案")
     void markReady_writesSummary() {
-        AiSession row = new AiSession();
-        row.setId(7L);
-        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(row));
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
 
         recorder.markReady("iv-1", 12, 8);
 
-        ArgumentCaptor<UpdateAnswerRequest> captor = ArgumentCaptor.forClass(UpdateAnswerRequest.class);
-        verify(sessionService).updateAnswer(captor.capture());
-        assertEquals(7L, captor.getValue().getId());
-        assertNotNull(captor.getValue().getAnswer());
-        assertTrue(captor.getValue().getAnswer().contains("12"), "摘要里应出现问答条数");
-        assertTrue(captor.getValue().getAnswer().contains("8"), "摘要里应出现参考回答条数");
+        Wrapper<AiSession> wrapper = captureUpdate();
+        assertEquals("面试总结已完成：共 12 条问答、8 条参考回答", boundValue(wrapper, "answer"));
+        assertNotNull(boundValue(wrapper, "update_time"),
+                "必须显式写 update_time，否则 MySQL ON UPDATE CURRENT_TIMESTAMP 会用 UTC 排序到 chat 行后面");
+        verify(sessionService, never()).updateAnswer(any());
+        verify(sessionService, never()).updateById(any());
+        verify(sessionService, never()).list(ArgumentMatchers.<Wrapper<AiSession>>any());
     }
 
     @Test
     @DisplayName("回填失败摘要：带上失败原因")
     void markFailed_writesReason() {
-        AiSession row = new AiSession();
-        row.setId(8L);
-        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(row));
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
 
         recorder.markFailed("iv-1", "分析失败: 模型超时");
 
-        ArgumentCaptor<UpdateAnswerRequest> captor = ArgumentCaptor.forClass(UpdateAnswerRequest.class);
-        verify(sessionService).updateAnswer(captor.capture());
-        assertTrue(captor.getValue().getAnswer().contains("分析失败: 模型超时"));
+        assertEquals("面试总结失败：分析失败: 模型超时", boundValue(captureUpdate(), "answer"));
+        verify(sessionService, never()).updateAnswer(any());
     }
 
     @Test
-    @DisplayName("回填只认面试类型的会话行（不能误伤 fileid 恰好相同的 chat 行）")
-    @SuppressWarnings("unchecked")
+    @DisplayName("重试开始：把上一次留下的失败摘要换成进行中占位")
+    void markRunning_writesRunningSummary() {
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(true);
+
+        recorder.markRunning("iv-1");
+
+        assertEquals("面试总结进行中…", boundValue(captureUpdate(), "answer"));
+        verify(sessionService, never()).updateAnswer(any());
+    }
+
+    @Test
+    @DisplayName("回填只认面试类型的会话行；命中 0 行时也不退化成逐行读-改-写")
     void updateSummary_filtersByAgentTypeAndFileid() {
-        when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of());
+        when(sessionService.update(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(false);
 
         recorder.markReady("iv-1", 1, 1);
 
-        ArgumentCaptor<Wrapper<AiSession>> captor = ArgumentCaptor.forClass(Wrapper.class);
-        verify(sessionService).list(captor.capture());
-        String sql = captor.getValue().getTargetSql();
+        Wrapper<AiSession> wrapper = captureUpdate();
+        String sql = wrapper.getTargetSql();
         assertTrue(sql.contains("agent_type"), "过滤条件必须含 agent_type，实际: " + sql);
         assertTrue(sql.contains("fileid"), "过滤条件必须含 fileid，实际: " + sql);
+        Map<String, Object> params = paramValues(wrapper);
+        assertTrue(params.containsValue(InterviewSessionRecorder.AGENT_TYPE),
+                "参数里必须绑定 agent_type（不能写成别的字面量），实际: " + params);
+        assertTrue(params.containsValue("iv-1"), "参数里必须绑定 interviewId，实际: " + params);
+        assertEquals("interview", boundValue(wrapper, "agent_type"));
+        assertEquals("iv-1", boundValue(wrapper, "fileid"));
+
+        // stub 返回 false = 命中 0 行：这条路径同样不该退回"查出来逐行写回"
+        verify(sessionService, never()).list(ArgumentMatchers.<Wrapper<AiSession>>any());
+        verify(sessionService, never()).updateAnswer(any());
+        verify(sessionService, never()).updateById(any());
+    }
+
+    /** 捕获那一次批量 UPDATE 的 wrapper，并顺带断言它只被调用一次 */
+    @SuppressWarnings("unchecked")
+    private Wrapper<AiSession> captureUpdate() {
+        ArgumentCaptor<Wrapper<AiSession>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(sessionService).update(captor.capture());
+        return captor.getValue();
+    }
+
+    /** UPDATE 的 SET 片段（保留 {@code #{ew.paramNameValuePairs.MPGENVALn}} 占位符） */
+    @SuppressWarnings("unchecked")
+    private static String setClause(Wrapper<AiSession> wrapper) {
+        assertTrue(wrapper instanceof LambdaUpdateWrapper,
+                "回填必须是批量 UPDATE（LambdaUpdateWrapper），实际: " + wrapper.getClass().getName());
+        return ((LambdaUpdateWrapper<AiSession>) wrapper).getSqlSet();
+    }
+
+    /** SET + WHERE 的原始片段，用来把某一列绑定的参数值取出来 */
+    private static String rawSegments(Wrapper<AiSession> wrapper) {
+        String set = setClause(wrapper);
+        String where = wrapper.getSqlSegment();
+        return where.contains(set) ? where : set + " " + where;
+    }
+
+    /** 取出"SQL 里 {column} = ?"这个占位符实际绑定的参数值 */
+    private static Object boundValue(Wrapper<AiSession> wrapper, String column) {
+        String sql = rawSegments(wrapper);
+        Matcher matcher = Pattern.compile("(?<![A-Za-z0-9_])" + Pattern.quote(column)
+                        + "\\s*=\\s*#\\{[A-Za-z0-9_.]*paramNameValuePairs\\.([A-Za-z0-9_]+)}")
+                .matcher(sql);
+        assertTrue(matcher.find(), "SQL 里应把列 " + column + " 绑定成参数，实际: " + sql);
+        return paramValues(wrapper).get(matcher.group(1));
+    }
+
+    private static Map<String, Object> paramValues(Wrapper<AiSession> wrapper) {
+        return ((AbstractWrapper<AiSession, ?, ?>) wrapper).getParamNameValuePairs();
     }
 }
