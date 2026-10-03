@@ -10,6 +10,7 @@ import com.dobao.dobaobackend.entity.vo.MessageVO;
 import com.dobao.dobaobackend.entity.vo.PageResult;
 import com.dobao.dobaobackend.entity.vo.SessionDetailVO;
 import com.dobao.dobaobackend.entity.vo.SessionListVO;
+import com.dobao.dobaobackend.interview.InterviewSessionRecorder;
 import com.dobao.dobaobackend.mapper.AiFileInfoMapper;
 import com.dobao.dobaobackend.mapper.AiPptInstMapper;
 import com.dobao.dobaobackend.service.AiSessionService;
@@ -173,11 +174,17 @@ public class SessionController {
     }
 
     /**
-     * 将会话记录转换为消息VO，并补齐关联文件信息
+     * 将会话记录转换为消息VO，并补齐关联文件信息。
+     *
+     * <p>面试会话要单独走一条分支：它的 {@code fileid} 存的是 interviewId（见
+     * {@link InterviewSessionRecorder}），不是 ai_file_info.file_id —— 拿它去查文件表只会白查一次。
+     * 文件名直接用 {@code question}（= 录音文件名），前端据此渲染录音 chip，并用 interviewId
+     * 去还原进度与报告。
      */
     private MessageVO convertToMessageVO(AiSession session) {
+        boolean interview = InterviewSessionRecorder.AGENT_TYPE.equals(session.getAgentType());
         AiFileInfo fileInfo = null;
-        if (StringUtils.hasText(session.getFileid())) {
+        if (!interview && StringUtils.hasText(session.getFileid())) {
             fileInfo = aiFileInfoMapper.selectOne(new LambdaQueryWrapper<AiFileInfo>()
                     .eq(AiFileInfo::getFileId, session.getFileid())
                     .last("LIMIT 1"));
@@ -192,8 +199,9 @@ public class SessionController {
                 .reference(session.getReference())
                 .createTime(session.getCreateTime())
                 .fileid(session.getFileid())
+                .interviewId(interview ? session.getFileid() : null)
                 .recommend(session.getRecommend())
-                .fileName(fileInfo != null ? fileInfo.getFileName() : null)
+                .fileName(interview ? session.getQuestion() : (fileInfo != null ? fileInfo.getFileName() : null))
                 .fileType(fileInfo != null ? fileInfo.getFileType() : null)
                 .fileSize(fileInfo != null ? fileInfo.getFileSize() : null)
                 .build();

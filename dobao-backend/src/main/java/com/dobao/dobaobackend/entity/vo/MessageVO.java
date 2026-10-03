@@ -28,6 +28,8 @@ public class MessageVO {
     private LocalDateTime createTime;
     /** 关联文件ID */
     private String fileid;
+    /** 面试会话的面试ID（agent_type=interview 时 = fileid；其它类型为 null） */
+    private String interviewId;
     /** 推荐追问问题JSON */
     private String recommend;
     /** 关联文件名 */
