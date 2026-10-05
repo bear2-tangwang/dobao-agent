@@ -13,10 +13,9 @@
 
     <properties>
         <!--
-          ⚠️ 必须有这一行。本机平台默认编码是 GB2312/GBK，不显式声明时
-          maven-compiler-plugin 会按 GBK 去读 UTF-8 源文件：中文注释里的多字节序列
-          可能被解出 "*/" 从而**提前终结 javadoc**，紧随其后的注释文字就被当成代码，
-          报出一堆莫名其妙的"需要 class、interface、enum 或 record"。
+          本机平台默认编码是 GBK，不显式声明时 maven-compiler-plugin 会按 GBK 读 UTF-8 源文件，
+          中文注释里的多字节序列可能被解出 "*/" 从而提前终结 javadoc，报出一堆
+          "需要 class、interface、enum 或 record"。
         -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -186,6 +185,7 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>
@@ -196,9 +196,8 @@
             </plugin>
 
             <!--
-              显式给编译插件指定编码。只靠 <properties> 里的 project.build.sourceEncoding
-              在本机（默认编码 gb2312）不生效：javac 会按平台编码去读 UTF-8 源文件，
-              中文注释被解坏后报出一堆"非法字符 / 需要 class、interface、enum 或 record"。
+              只靠 project.build.sourceEncoding 在本机（默认编码 GBK）不生效，
+              必须在这里再给编译插件显式指定编码。
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

@@ -11,7 +11,6 @@ import java.time.LocalDateTime;
 
 /**
  * 面试记录主表实体，对应 {@code ai_interview}。
- * </ul>
  */
 @Data
 @TableName("ai_interview")
@@ -30,20 +29,20 @@ public class AiInterview {
     private String interviewId;
 
     /**
-     * 用户标识，本期写占位值 'default'，登录后替换
+     * 归属用户ID（db_user.user_id）
      */
     @TableField("user_id")
     private String userId;
 
     /**
-     * 关联 ai_file_info.file_id
+     * 关联 ai_file_info.file_id（面试录音同时以文件记录存在）
      */
     @TableField("file_id")
     private String fileId;
 
     /**
-     * 音频内容 SHA-256，用于"同一音频重复上传"的幂等去重（步骤 6）。
-     * 光靠 asr_task_id 拦不住重复上传——重复上传会在提交转写之前就新建一条记录。
+     * 音频内容 SHA-256，用于"同一音频重复上传"的幂等去重：
+     * 重复上传会在提交转写之前就新建一条记录，光靠 asr_task_id 拦不住。
      */
     @TableField("audio_hash")
     private String audioHash;
@@ -121,13 +120,13 @@ public class AiInterview {
     private String transcriptText;
 
     /**
-     * 转写句子数。
+     * 转写句子数
      */
     @TableField("sentence_count")
     private Integer sentenceCount;
 
     /**
-     * 识别出的说话人数（与 {@link #sentenceCount} 同时写入，用途相同）
+     * 识别出的说话人数（与 {@link #sentenceCount} 同时写入）
      */
     @TableField("speaker_count")
     private Integer speakerCount;
@@ -151,13 +150,13 @@ public class AiInterview {
     private String reportFileName;
 
     /**
-     * 创建时间。
+     * 创建时间
      */
     @TableField("create_time")
     private LocalDateTime createTime;
 
     /**
-     * 更新时间。
+     * 更新时间
      */
     @TableField("update_time")
     private LocalDateTime updateTime;

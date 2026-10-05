@@ -19,9 +19,7 @@ import java.util.TreeSet;
  * ASR 结果 JSON → 内存句子列表。
  *
  * <p><b>纯转换，不落库</b>：原始 JSON 已存在 {@code ai_interview.transcript_json}，
- * 本类的结果只在本次处理（角色判定、问答清单格式化、报告附录）中使用，
- * 需要时重新解析一次即可。这样做的代价接近于零（40 分钟音频约 80KB JSON），
- * 换来的是少一张表、少一处数据漂移风险。
+ * 本类结果只在本次处理中使用，需要时重新解析即可（40 分钟音频约 80KB JSON）。
  */
 @Slf4j
 @Component
@@ -58,7 +56,7 @@ public class TranscriptNormalizer {
         Set<String> lines = new LinkedHashSet<>();
         int fallbackSeq = 1;
         for (AsrTranscriptResult.Sentence s : raw) {
-            // sentence_id 实测连续可用，缺失时用递增序号兜底，保证 seqNo 非空
+            // sentence_id 一般连续可用，缺失时用递增序号兜底，保证 seqNo 非空
             Integer seq = s.sentenceId() != null ? s.sentenceId() : fallbackSeq;
             fallbackSeq = seq + 1;
             SentenceDTO dto = new SentenceDTO(seq, s.speakerId(), s.beginTime(), s.endTime(), s.text());
@@ -68,7 +66,7 @@ public class TranscriptNormalizer {
             }
             lines.add(dto.toLine());
         }
-        // 双保险：按起始时间排序（正常情况百炼已按时间返回，实测严格单调）
+        // 双保险：按起始时间排序（百炼正常已按时间返回，但顺序是配对正确性的前提）
         sentences.sort(Comparator.comparing(SentenceDTO::beginMs, Comparator.nullsLast(Comparator.naturalOrder())));
 
         NormalizedTranscript normalized = new NormalizedTranscript(

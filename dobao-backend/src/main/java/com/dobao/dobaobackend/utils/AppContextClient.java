@@ -10,8 +10,7 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 /**
- * Spring 应用上下文静态工具类
- * 用于在非Spring管理的类中静态获取Bean、环境变量
+ * Spring 应用上下文静态工具类：供非 Spring 管理的类静态获取 Bean / 配置项。
  */
 @Component
 @Slf4j
@@ -29,13 +28,6 @@ public class AppContextClient {
     @PostConstruct
     public void init() {
         applicationContextRef = this.applicationContext;
-    }
-
-    /**
-     * 上下文是否已就绪
-     */
-    public static boolean ready() {
-        return applicationContextRef == null;
     }
 
     /**

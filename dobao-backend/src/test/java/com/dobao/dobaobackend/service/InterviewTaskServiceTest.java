@@ -56,15 +56,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 面试状态机 → 会话摘要的回填。
- *
- * <p>只测三个汇合点：报告就绪（{@code publishReport} → {@code markReady}）、
- * 失败（{@code updateStatus} → {@code markFailed}）、开始/重试
- * （{@code TRANSCRIBING}/{@code ANALYZING} → {@code markRunning}）。
- * 中间过程（转写内容、角色判定、LLM 调用）不在本需求的范围内。
- *
- * <p>被测算在 {@link #setUp()} 里显式 new：构造器 14 个依赖里有 4 个本测试用不到，
- * 显式传 {@code null} 比"让 Mockito 静默填 null"更容易在构造器变更时被看见。
+ * 面试状态机 → 会话摘要的回填，只覆盖三个汇合点：报告就绪（{@code publishReport} → {@code markReady}）、
+ * 失败（{@code updateStatus} → {@code markFailed}）、开始/重试（{@code TRANSCRIBING}/{@code ANALYZING} →
+ * {@code markRunning}）。被测算在 {@link #setUp()} 里显式 new，用不到的依赖也传具名 mock 而非 {@code null}。
  */
 @ExtendWith(MockitoExtension.class)
 class InterviewTaskServiceTest {
@@ -73,7 +67,7 @@ class InterviewTaskServiceTest {
      * 真实配置对象（普通实例，不是 {@code @Spy}：这里不需要 Mockito 代理）。
      *
      * <p>{@code pollTimeoutMs} 在 {@link #setUp()} 里显式设成 30 分钟：超时文案里那句
-     * "超过 30 分钟"就是从这个值算出来的，显式设置让这层耦合摆在明面上，不依赖生产默认值。
+     * "超过 30 分钟"就是这个值算出来的，显式设置让这层耦合摆在明面上，不依赖生产默认值。
      */
     private final InterviewProperties properties = new InterviewProperties();
 
@@ -95,9 +89,8 @@ class InterviewTaskServiceTest {
     private InterviewSessionRecorder sessionRecorder;
     @Mock
     private ObjectMapper objectMapper;
-    // 下面 4 个依赖本测试的路径都用不到，但仍声明成具名 mock 并在构造器里显式传入：
-    // 传字面量 null 的话，构造器一旦换序（同类型之间）或插入同类型参数，编译期不会有任何提示，
-    // 错误会静默地留到运行期。具名 mock 让"实参顺序 = 字段声明顺序"这件事由编译器兜住。
+    // 下面 4 个依赖本测试的路径都用不到，但仍声明成具名 mock 并显式传入：传字面量 null 的话，
+    // 构造器一旦换序（同类型之间）或插入同类型参数，编译期不会有任何提示，错误会留到运行期。
     @Mock
     private TranscriptNormalizer transcriptNormalizer;
     @Mock
@@ -111,7 +104,7 @@ class InterviewTaskServiceTest {
 
     @BeforeAll
     static void initTableInfo() {
-        // LambdaUpdateWrapper 要把 AiInterview::getInterviewId 解析成列名，依赖 MyBatis-Plus 的
+        // LambdaUpdateWrapper 把 AiInterview::getInterviewId 解析成列名依赖 MyBatis-Plus 的
         // TableInfo，而单测没有 Spring 上下文，所以这里只注册元数据（不连库）
         MybatisPlusTableInfo.ensure(AiInterview.class);
     }
@@ -120,7 +113,7 @@ class InterviewTaskServiceTest {
     void setUp() {
         // 超过 30 分钟即超时（1800000 ms），与 pollTranscribingTasks_timeout_marksFailed 的文案断言对应
         properties.getAsr().setPollTimeoutMs(1_800_000L);
-        // 顺序 = InterviewTaskService 的字段声明顺序（Lombok @RequiredArgsConstructor）；
+        // 顺序 = InterviewTaskService 的字段声明顺序（Lombok @RequiredArgsConstructor）：
         // 14 个实参全部具名，换序或增删参数都会编译失败，不会静默错配
         taskService = new InterviewTaskService(properties, interviewMapper, audioUrlProvider, asrClient,
                 transcriptNormalizer, speakerRoleResolver, qaListBuilder, reportGenerator, reportRenderer,
@@ -134,8 +127,8 @@ class InterviewTaskServiceTest {
         record.setInterviewId("iv-1");
 
         String reportJson = "{\"interviewId\":\"iv-1\"}";
-        // 问答/参考回答都非空、且条数不同（2 vs 1）：这样"计数真的数了"以及"两个实参没写反"
-        // 才被断言住。两者若都是空表，把实现里的 size() 换成硬编码 0 也能全绿（复审变异验证过）。
+        // 问答 2 条、参考回答 1 条且条数不同：这样"计数真的数了"与"两个实参没写反"才被断言住；
+        // 两者都是空表的话，把实现里的 size() 换成硬编码 0 也能全绿。
         List<QaItem> qaList = List.of(
                 new QaItem("Q001", "什么是索引下推？", 0L, "把过滤条件下推到存储引擎…", 1000L, 5000L),
                 new QaItem("Q002", "介绍一下 MVCC", 6000L, "多版本并发控制…", 7000L, 12000L));
@@ -150,7 +143,7 @@ class InterviewTaskServiceTest {
 
         taskService.publishReport(record, List.of());
 
-        // 关键落库行为：整段 update 被删掉也必须让本用例变红
+        // 整段落库 update 被删掉必须让本用例变红
         Wrapper<AiInterview> wrapper = captureUpdate();
         String set = setClause(wrapper);
         assertTrue(set.contains("status"), "SET 必须把状态推到 READY，实际 SET: " + set);
@@ -174,7 +167,8 @@ class InterviewTaskServiceTest {
         AiInterview record = new AiInterview();
         record.setInterviewId("iv-1");
 
-        // report_json 会长期保存并被反序列化回来，旧报告里这两项确实是 null（见 InterviewReport javadoc）
+        // report_json 会长期保存并被反序列化回来，历史报告里这两项确实是 null
+        // （见 InterviewReport javadoc）
         InterviewReport legacy = new InterviewReport("iv-1", 1000L, LocalDateTime.now(),
                 null, null, new ReportSummary(List.of(), List.of(), "总结"));
         when(reportGenerator.generate(eq(record), any())).thenReturn(legacy);

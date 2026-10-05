@@ -1,8 +1,7 @@
 package com.dobao.dobaobackend.prompts;
 
 /**
- * React型Agent提示词
- * 包含历史遗留的联网搜索/文件问答提示词，以及当前统一使用的提示词
+ * React 型 Agent 提示词：联网搜索、文件问答、统一问答与推荐追问。
  */
 public final class ReactAgentPrompts {
 
@@ -10,7 +9,7 @@ public final class ReactAgentPrompts {
     }
 
     /**
-     * 历史遗留：联网搜索Agent系统提示词
+     * 联网搜索 Agent 系统提示词
      */
     public static String getWebSearchPrompt() {
         return """
@@ -44,7 +43,7 @@ public final class ReactAgentPrompts {
     }
 
     /**
-     * 历史遗留：文件问答Agent系统提示词
+     * 文件问答 Agent 系统提示词
      */
     public static String getFilePrompt() {
         return """
@@ -85,7 +84,7 @@ public final class ReactAgentPrompts {
     }
 
     /**
-     * 获取WebSearchAgent基础提示词（不含自定义部分）
+     * 联网搜索基础提示词（通用规则来自 BaseAgentPrompts）
      */
     public static String getWebSearchBasePrompt() {
         return """
@@ -110,7 +109,7 @@ public final class ReactAgentPrompts {
     }
 
     /**
-     * 获取FileAgent基础提示词（不含自定义部分）
+     * 文件问答基础提示词（通用规则来自 BaseAgentPrompts）
      */
     public static String getFileBasePrompt() {
         return """
@@ -140,7 +139,7 @@ public final class ReactAgentPrompts {
     }
 
     /**
-     * 统一问答Agent系统提示词（当前使用）
+     * 统一问答 Agent 系统提示词
      */
     public static String getUnifiedPrompt() {
         return """

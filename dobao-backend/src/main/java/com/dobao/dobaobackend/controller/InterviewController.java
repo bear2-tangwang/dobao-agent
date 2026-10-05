@@ -28,13 +28,13 @@ import reactor.core.publisher.Flux;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 面试总结 · 接口。
+ * 面试总结接口。
  *
- * <p>与既有 {@code FileController} 保持同样的返回风格（{@link BaseResult} 包装 + 统一错误信息），
+ * <p>与 {@code FileController} 保持同样的返回风格（{@link BaseResult} 包装 + 统一错误信息），
  * 便于前端复用现有的请求封装。
  *
- * <p>注意上传接口<b>不做任何耗时动作</b>：落 MinIO + 建记录后立即返回 interviewId，
- * 转写与后续分析全部异步，这是"接口 3 秒内返回"这条验收的基础。
+ * <p>上传接口不做任何耗时动作：落 MinIO + 建记录后立即返回 interviewId，
+ * 转写与后续分析全部异步。
  */
 @Slf4j
 @RestController
@@ -72,9 +72,8 @@ public class InterviewController {
     }
 
     /**
-     * 面试进度实时流（SSE）。
-     * 上传接口只返回"已接收"，真正的进度（转写 / 分析 / 报告）在这条流上推。
-     * 流本身只做通知，事实来源仍是数据库，所以前端在断流时会自动降级为轮询。
+     * 面试进度实时流（SSE）。流本身只做通知，事实来源仍是数据库，
+     * 所以前端在断流时会自动降级为轮询。
      */
     @GetMapping(value = "/{interviewId}/stream", produces = "text/event-stream;charset=UTF-8")
     public Flux<ServerSentEvent<String>> stream(@PathVariable String interviewId) {
@@ -82,9 +81,6 @@ public class InterviewController {
         return progressHub.stream(interviewId);
     }
 
-    /**
-     * 查询处理状态与阶段
-     */
     @GetMapping("/{interviewId}/status")
     public BaseResult<InterviewStatusVO> status(@PathVariable String interviewId) {
         try {
@@ -108,9 +104,6 @@ public class InterviewController {
         }
     }
 
-    /**
-     * 下载报告 Markdown 文件
-     */
     @GetMapping("/{interviewId}/report/download")
     public ResponseEntity<?> downloadReport(@PathVariable String interviewId) {
         try {
@@ -131,8 +124,7 @@ public class InterviewController {
     /**
      * 重试 / 重新生成报告。
      *
-     * <p>有文字稿时只重跑分析（不重新转写、不重复计费），否则重新提交转写；
-     * 这是"重新生成报告"的唯一入口，不再单独提供 analyze 接口。
+     * <p>有文字稿时只重跑分析（不重新转写、不重复计费），否则重新提交转写。
      */
     @PostMapping("/{interviewId}/retry")
     public BaseResult<String> retry(@PathVariable String interviewId) {

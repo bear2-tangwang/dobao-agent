@@ -54,7 +54,6 @@ public class PptBuilderPrompts {
             """;
 
     /**
-     * 大纲生成提示词模板
      * 根据需求、模板结构、模板名称和搜索信息生成大纲
      */
     public static final String getOutlinePrompt(String requirement, String templateSchema, String templateName, String searchInfo) {
@@ -141,8 +140,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * 模板选择提示词模板
-     * 根据需求选择合适的模板
+     * 根据需求从可用模板中选择一个
      */
     public static final String getTemplateSelectionPrompt(String requirement, String templatesInfo) {
         return """
@@ -175,8 +173,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * Schema生成提示词模板
-     * 根据模板Schema和大纲生成PPT Schema
+     * 根据模板 Schema 和大纲生成 PPT Schema
      */
     public static final String getSchemaGenerationPrompt(String templateSchema, String outline) {
         return """
@@ -319,7 +316,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * Schema修改提示词模板
+     * 根据用户的修改需求改写已有 PPT Schema
      */
     public static final String getSchemaModifyPrompt(String userRequest, String currentSchema) {
         return """
@@ -427,7 +424,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * 最终总结提示词模板
+     * 生成完成后的用户提示词
      */
     public static final String getSummaryPrompt(String requirement, String fileUrl, int pageCount) {
         return """
@@ -462,7 +459,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * 修改后总结提示词模板
+     * 修改完成后的用户提示词
      */
     public static final String getModifySummaryPrompt(String modifyRequest, String fileUrl) {
         return """
@@ -496,8 +493,7 @@ public class PptBuilderPrompts {
     }
 
     /**
-     * PPT生成失败提示词模板
-     * 根据思考过程，简洁地告知用户失败原因
+     * 根据思考过程向用户说明失败原因
      */
     public static final String getFailurePrompt(String thinkingProcess) {
         return """

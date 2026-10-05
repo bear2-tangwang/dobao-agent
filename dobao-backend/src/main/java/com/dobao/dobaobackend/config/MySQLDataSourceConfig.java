@@ -15,9 +15,6 @@ import javax.sql.DataSource;
 @Configuration
 public class MySQLDataSourceConfig {
 
-    /**
-     * 读取 spring.datasource 配置项
-     */
     @Bean
     @Primary
     @ConfigurationProperties("spring.datasource")
@@ -25,9 +22,6 @@ public class MySQLDataSourceConfig {
         return new DataSourceProperties();
     }
 
-    /**
-     * 构建 MySQL 数据源
-     */
     @Bean
     @Primary
     public DataSource mysqlDataSource() {

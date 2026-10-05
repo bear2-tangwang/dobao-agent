@@ -22,53 +22,35 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 面试进度实时推送（SSE）。
- *
- * <p><b>为什么要有它</b>：上传接口返回后，转写要几分钟、报告归纳要 1~3 分钟，
- * 期间前端只能靠 {@code GET /{id}/status} 轮询（4~12 秒一次，任务越长越显得"卡住"）。
- * 这个类把状态机里的每一次跳变**在同一瞬间**推给页面，轮询退化为"断线兜底"而不是主通道。
+ * 面试进度实时推送（SSE）：把状态机里的每一次跳变在同一瞬间推给页面，
+ * 前端的 {@code GET /{id}/status} 轮询退化为"断线兜底"而不是主通道。
  *
  * <h3>协议（与前端 {@code dobao-front/src/composables/useInterview.ts} 一一对应）</h3>
  * <pre>
- * event: snapshot   data: { status, stage, text, sentenceCount, speakerCount, reportReady, reportUrl }  连接建立时的当前态
- * event: progress   data: { stage, text, qaCount?, elapsedMs? }        阶段推进（elapsedMs 只在长步骤心跳里出现）
- * event: complete   data: { status:"READY", reportUrl, report: {...} } 报告就绪（带完整报告）
- * event: error      data: { status, message }                          失败原因
- * :ping                                                                心跳注释帧（转写期可能几分钟没跳变）
+ * event: snapshot   data: { status, stage, text, sentenceCount, speakerCount, reportReady, reportUrl }
+ * event: progress   data: { stage, text, qaCount?, elapsedMs? }
+ * event: complete   data: { status:"READY", reportUrl, report: {...} }
+ * event: error      data: { status?, message }
+ * :ping                                                                心跳注释帧
  * </pre>
- * 事件名、{@code stage} 的取值（uploaded/transcribing/transcribed/analyzing/extracting/reporting/ready/error）
- * 都是**前后端约定**，前端按 {@code stage} 做步骤去重，所以这里不能随手改名。
+ * 事件名与 {@code stage} 取值都是前后端约定（前端按 {@code stage} 去重），不能随手改名。
  *
- * <h3>帧格式：必须交给框架拼（2026-10 修复的致命 bug）</h3>
- *
- * <p>本类曾经自己把帧拼成 {@code "event: x\ndata: {json}\n\n"} 再当字符串发出去，
- * 但控制器返回 {@code Flux<String>} + {@code produces=text/event-stream} 时，
- * Spring MVC 的 {@code SseEmitterSubscriber} 只对 {@link ServerSentEvent} 走结构化的
- * {@code event:}/{@code data:} 输出，**其他对象一律当作"一条 data"**，于是线上变成了：
- *
- * <pre>
- * data:event: snapshot
- * data:data: {"status":"TRANSCRIBED",...}
- * </pre>
- *
- * 前端 {@code JSON.parse("event: snapshot\ndata: {...}")} 必然失败 → 所有事件被静默丢弃 →
- * 页面只能等兜底轮询，用户看到的现象就是"状态不推送"。现在改为输出 {@link ServerSentEvent}，
- * 帧格式**只有框架一处定义**，并由 {@code InterviewProgressStreamIT} 直接断言线上字节。
+ * <h3>帧格式必须交给框架拼</h3>
+ * 本类只产出 {@link ServerSentEvent}，不自己拼 {@code "event: x\ndata: ..."} 字符串：
+ * 控制器返回 {@code Flux<String>} + {@code produces=text/event-stream} 时，
+ * Spring MVC 只对 {@link ServerSentEvent} 走结构化的 {@code event:}/{@code data:} 输出，
+ * 其他对象一律当成"一条 data"，前端解析必然失败、所有事件被静默丢弃。
  *
  * <h3>几条刻意的取舍</h3>
  * <ul>
- *   <li><b>推的是"已经落库的事实"，不是另一份状态</b>：{@link #publishProgress} 只在
- *       {@code InterviewTaskService} 改完数据库之后调用；流断了、页面刷新了，
- *       重新连接时的 snapshot 一律从库里读，不会出现"流说有、库里没有"。</li>
+ *   <li><b>推的是"已经落库的事实"</b>：推送只在状态机改完数据库之后发生；
+ *       断线或刷新后的 snapshot 一律从库里读，不会出现"流说有、库里没有"。</li>
  *   <li><b>没人看就不推</b>：推送时若该 interviewId 还没有连接，直接丢弃 ——
- *       连接时的那一帧 snapshot 已经能补齐全部已发生的状态。</li>
- *   <li><b>长步骤持续报时</b>：转写等待、角色判定、报告生成都可能静默几分钟，
- *       心跳任务对"当前长步骤 + 有订阅者"的记录推一条带 {@code elapsedMs} 的 progress，
- *       让页面上的文案一直在动（见 {@link #heartbeat()}）。</li>
+ *       连接时的那一帧 snapshot 已能补齐全部已发生的状态。</li>
  *   <li><b>终态主动收尾</b>：{@code complete}/{@code error} 之后 complete 掉 sink 并回收，
  *       否则每条完成的面试都会在内存里留一个永远不结束的 Flux。</li>
  *   <li><b>单实例内存广播</b>：多实例部署时前端可能连到"不是跑任务的那台"，
- *       那时只能靠 snapshot + 轮询兜底；要真正跨实例需要换成 Redis pub/sub 之类的总线。</li>
+ *       那时只能靠 snapshot + 轮询兜底。</li>
  * </ul>
  */
 @Slf4j
@@ -88,8 +70,7 @@ public class InterviewProgressHub {
     /**
      * "长步骤"：这些阶段可能静默几分钟，心跳要为它们报时。
      *
-     * <p>uploaded / transcribed / ready / error 都是瞬时阶段，报时没有意义，
-     * 它们仍然只发 {@code :ping} 保活。
+     * <p>uploaded / transcribed / ready / error 都是瞬时阶段，只发 {@code :ping} 保活。
      */
     private static final Set<String> LONG_STAGES =
             Set.of("transcribing", "analyzing", "extracting", "reporting");
@@ -106,23 +87,18 @@ public class InterviewProgressHub {
      */
     private final Map<String, Sinks.Many<ServerSentEvent<String>>> sinks = new ConcurrentHashMap<>();
 
-    /**
-     * interviewId → 当前正在进行的阶段（用于心跳报时）。终态时清除。
-     */
+    /** interviewId → 当前正在进行的阶段（用于心跳报时）。终态时清除。 */
     private final Map<String, StepState> steps = new ConcurrentHashMap<>();
 
     /** 一个正在进行中的阶段：起始时间只在 stage 变化时重置，因此"已用 N 秒"是真实的阶段耗时 */
     private record StepState(String stage, String baseText, long startedAtMs) {
     }
 
-    // ==================== 订阅端 ====================
-
     /**
      * 一条面试进度流：先补一帧 snapshot，再持续推后续事件。
      *
-     * <p>已经是终态的记录不会挂长连接：READY 直接回一帧 {@code complete}（带完整报告，
-     * 前端因此不用再请求一次报告接口），FAILED 直接回一帧 {@code error}，
-     * 两种情况连接都会立刻收尾。
+     * <p>已是终态的记录不挂长连接：READY 直接回一帧 {@code complete}（带完整报告，
+     * 前端因此不用再请求一次报告接口），FAILED 直接回一帧 {@code error}，两种情况都立刻收尾。
      */
     public Flux<ServerSentEvent<String>> stream(String interviewId) {
         return Flux.defer(() -> {
@@ -131,8 +107,8 @@ public class InterviewProgressHub {
                 return Flux.just(errorEvent(null, "面试记录不存在: " + interviewId));
             }
             // 归属校验：这条流会把转写进度、问答条数甚至完整报告推给订阅者，
-            // 拿到别人的 interviewId 就能看别人的面试，属于越权。
-            // 报"不存在"而不是"无权访问"，避免泄露该 ID 真实存在。
+            // 拿到别人的 interviewId 就能看别人的面试。报"不存在"而不是"无权访问"，
+            // 避免泄露该 ID 真实存在。
             String currentUserId = UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
             if (StringUtils.hasText(record.getUserId()) && !record.getUserId().equals(currentUserId)) {
                 log.warn("面试进度流归属校验失败: interviewId={}, owner={}, requester={}",
@@ -169,13 +145,11 @@ public class InterviewProgressHub {
         });
     }
 
-    // ==================== 推送端 ====================
-
     /**
      * 状态跳变，状态机里每一次"写库 + 通知"都走这里。
      *
-     * <p>FAILED 推的是 {@code error} 事件（带可读原因），其余状态推 {@code progress}；
-     * 分支收在这里，调用方（{@code InterviewTaskService#updateStatus}）不必自己判终态。
+     * <p>FAILED 推 {@code error} 事件（带可读原因），其余状态推 {@code progress}；
+     * 分支收在这里，调用方不必自己判终态。
      *
      * @param errorMsg 失败原因，仅 {@code FAILED} 使用；为空时退化为兜底文案
      */
@@ -193,8 +167,7 @@ public class InterviewProgressHub {
     /**
      * 阶段内的细粒度进度（准备音频 / 等待识别 / 判定角色 / 整理问答 / 报告生成中）。
      *
-     * <p>同时把该阶段登记为"当前阶段"：心跳任务据此为长步骤补齐"已用 N 秒"，
-     * 因此调用方不需要自己关心报时。
+     * <p>同时把该阶段登记为"当前阶段"，心跳任务据此为长步骤补齐"已用 N 秒"。
      *
      * @param qaCount 已整理出的问答条数，没有就传 null
      */
@@ -206,8 +179,8 @@ public class InterviewProgressHub {
     /**
      * 报告就绪（终态）。带上完整报告，前端一次就能渲染出正文。
      *
-     * <p>不下发 {@code downloadUrl}：下载地址是前端按自己的 {@code backendUrl} 拼的，
-     * 后端并不知道对外可达的域名（前端在缺字段时会自行拼接）。
+     * <p>不下发 {@code downloadUrl}：下载地址由前端按自己的 {@code backendUrl} 拼，
+     * 后端并不知道对外可达的域名。
      *
      * @param reportUrl  报告在 MinIO 里的地址（前端只做展示/兜底）
      * @param reportJson {@code ai_interview.report_json} 原文，原样透传成 {@code report} 字段
@@ -217,15 +190,10 @@ public class InterviewProgressHub {
     }
 
     /**
-     * 心跳：长步骤报时 + 静默连接保活，两件事一个定时任务做完（默认 15 秒一次）。
+     * 心跳：长步骤报时 + 静默连接保活，一个定时任务做完（默认 15 秒一次）。
      *
-     * <ul>
-     *   <li>当前阶段是长步骤（转写等待 / 角色判定 / 报告生成）→ 推一条带 {@code elapsedMs}
-     *       的 progress，文案是"基础文案（已用 N 秒）"，前端按 stage 去重后只更新那一行文案；</li>
-     *   <li>其余情况 → 推注释帧 {@code :ping}，只为保住长连接，前端直接忽略。</li>
-     * </ul>
-     *
-     * <p>只对"确实有订阅者"的面试发，避免给没人看的 sink 堆缓冲区。
+     * <p>长步骤（转写等待 / 角色判定 / 报告生成）推一条带 {@code elapsedMs} 的 progress，
+     * 其余推注释帧 {@code :ping} 保活。只对确实有订阅者的面试发。
      */
     @Scheduled(fixedDelayString = "${interview.stream.heartbeat-ms:15000}")
     public void heartbeat() {
@@ -248,15 +216,13 @@ public class InterviewProgressHub {
         });
     }
 
-    // ==================== 内部实现 ====================
-
     private AiInterview find(String interviewId) {
         return interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
                 .eq(AiInterview::getInterviewId, interviewId));
     }
 
     /**
-     * 登记/更新当前阶段。同 stage 重复调用**不重置起始时间**，
+     * 登记/更新当前阶段。同 stage 重复调用不重置起始时间，
      * 这样"准备音频 → 提交任务 → 等待结果"三条同阶段文案能共用同一个计时。
      */
     private void registerStep(String interviewId, String stage, String text) {
@@ -330,12 +296,11 @@ public class InterviewProgressHub {
     /**
      * snapshot 事件：连接建立时的当前态。
      *
-     * <p>字段与 {@code GET /interview/{id}/status} 对齐（阶段 key、文案、句数/说话人数都在），
-     * 目的是让断线重连与页面刷新<b>不必再补一次状态查询</b> —— 轮询因此只在
-     * "流完全不可用"时才启动。
+     * <p>字段与 {@code GET /interview/{id}/status} 对齐，目的是让断线重连与页面刷新
+     * <b>不必再补一次状态查询</b>。
      *
-     * <p>两个终态不走 snapshot：READY 走 {@code complete}（带完整报告）、
-     * FAILED 走 {@code error}（带失败原因），都在 {@link #stream(String)} 里提前返回。
+     * <p>两个终态不走 snapshot：READY 走 {@code complete}、FAILED 走 {@code error}，
+     * 都在 {@link #stream(String)} 里提前返回。
      */
     private ServerSentEvent<String> snapshotEvent(AiInterview record) {
         Map<String, Object> data = new LinkedHashMap<>();
@@ -353,8 +318,8 @@ public class InterviewProgressHub {
     }
 
     /**
-     * complete 事件（报告就绪）。连接时已是 READY 的记录与"报告刚生成"两个场景推的是同一帧，
-     * 因此两处共用本方法，保证字段完全一致。
+     * complete 事件（报告就绪）：连接时已是 READY 与"报告刚生成"两个场景共用本方法，
+     * 保证两处字段完全一致。
      */
     private ServerSentEvent<String> completeEvent(String reportUrl, String reportJson) {
         Map<String, Object> data = new LinkedHashMap<>();
@@ -386,16 +351,14 @@ public class InterviewProgressHub {
             return ServerSentEvent.builder(objectMapper.writeValueAsString(data)).event(name).build();
         } catch (Exception e) {
             // 序列化失败说明载荷里有无法映射的对象，属于编码问题：退化成一条说明性 error 帧，
-            // 而不是把一个空 body 推给前端（那样只会看到一帧没有 data 的 event）
+            // 而不是把一帧没有 data 的 event 推给前端
             log.warn("面试进度事件序列化失败: event={}, err={}", name, e.getMessage());
             return ServerSentEvent.builder("{\"stage\":\"error\",\"message\":\"进度事件序列化失败\"}")
                     .event(EVENT_ERROR).build();
         }
     }
 
-    // ---- 状态 → 协议字段 ----
-
-    /** 状态 → 前端的步骤 key（前端按 key 去重，所以必须与 useInterview.ts 的 InterviewStepKey 同名） */
+    /** 状态 → 前端步骤 key（前端按 key 去重，必须与 useInterview.ts 的步骤 key 同名） */
     private static String stageKey(InterviewStatus status) {
         return switch (status) {
             case UPLOADED -> "uploaded";

@@ -26,7 +26,7 @@ public class AiSession {
      * 归属用户ID（db_user.user_id）。
      *
      * <p>数据隔离的唯一依据：所有列表/详情/删除查询都必须带上它。
-     * 列有 DEFAULT 'default'，登录功能上线前的历史数据都挂在兜底用户名下。
+     * 列有 DEFAULT 'default'。
      */
     @TableField("user_id")
     private String userId;
@@ -38,7 +38,7 @@ public class AiSession {
     private String sessionId;
 
     /**
-     * 智能体类型（react/file/ppt/interview）
+     * 智能体类型（chat/ppt/interview 等）
      */
     @TableField("agent_type")
     private String agentType;

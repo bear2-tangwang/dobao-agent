@@ -9,17 +9,12 @@ import type {
   InterviewReport
 } from '@/types'
 
-/**
- * 从异常里取一句可读的话。
- *
- * 迁移到统一封装后，业务错误都在 {@link ApiError} 的 message 里，
- * 而不是散落在各自的 `response.ok` 判断里。
- */
+/** 从异常里取一句可读的话，取不到就用 fallback */
 const messageOf = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback
 
 /** Test backend connection */
-export const testConnection = async (backendUrl: string): Promise<{ success: boolean; error?: string }> => {
+export const testConnection = async (): Promise<{ success: boolean; error?: string }> => {
   try {
     await request<unknown>('/file/list')
     return { success: true }
@@ -36,7 +31,7 @@ export const testConnection = async (backendUrl: string): Promise<{ success: boo
 }
 
 /** Load chat list */
-export const loadChats = async (backendUrl: string) => {
+export const loadChats = async () => {
   try {
     const data = await get<{
       records?: Array<{ conversationId: string; question?: string; agentType?: string; fileid?: string }>
@@ -61,10 +56,7 @@ export const loadChats = async (backendUrl: string) => {
 }
 
 /** Get chat detail */
-export const getChatDetail = async (
-  backendUrl: string,
-  chatId: string
-): Promise<SessionDetail | null> => {
+export const getChatDetail = async (chatId: string): Promise<SessionDetail | null> => {
   try {
     return await get<SessionDetail>(`/session/${encodeURIComponent(chatId)}`)
   } catch (error) {
@@ -74,7 +66,7 @@ export const getChatDetail = async (
 }
 
 /** Delete chat */
-export const deleteChat = async (backendUrl: string, chatId: string) => {
+export const deleteChat = async (chatId: string) => {
   try {
     const message = await del<string>(`/session/${encodeURIComponent(chatId)}`)
     return { success: true, message }
@@ -88,7 +80,7 @@ export const deleteChat = async (backendUrl: string, chatId: string) => {
 }
 
 /** Upload file */
-export const uploadFile = async (backendUrl: string, file: File) => {
+export const uploadFile = async (file: File) => {
   const formData = new FormData()
   formData.append('file', file)
 
@@ -104,7 +96,7 @@ export const uploadFile = async (backendUrl: string, file: File) => {
 }
 
 /** Build stream chat URL（同源相对地址，经 Vite 代理到后端） */
-export const getStreamChatUrl = (backendUrl: string, selectedAgent: string): string => {
+export const getStreamChatUrl = (selectedAgent: string): string => {
   if (selectedAgent === 'ppt') {
     return `${apiBase}/agent/pptx/stream`
   } else if (selectedAgent === 'deep') {
@@ -115,15 +107,14 @@ export const getStreamChatUrl = (backendUrl: string, selectedAgent: string): str
 
 /** Build stream SSE connection */
 export const streamChat = async (
-  backendUrl: string,
   agentId: string,
   query: string,
   conversationId: string,
   fileId?: string | null,
   signal?: AbortSignal
 ): Promise<ReadableStreamDefaultReader<Uint8Array>> => {
-  const apiUrl = getStreamChatUrl(backendUrl, agentId)
-  // apiUrl 现在是相对地址，new URL 需要基准；用 window.location.origin 兜底
+  const apiUrl = getStreamChatUrl(agentId)
+  // apiUrl 是相对地址，new URL 需要基准
   const url = new URL(apiUrl, window.location.origin)
   url.searchParams.append('query', query)
   url.searchParams.append('conversationId', conversationId)
@@ -133,7 +124,7 @@ export const streamChat = async (
 
   const response = await fetch(url.toString(), {
     method: 'GET',
-    // 会话 Cookie 必须带上，否则后端拦截器会判定未登录
+    // 必须带会话 Cookie，否则后端拦截器会判定未登录
     credentials: 'include',
     headers: {
       Accept: 'text/event-stream',
@@ -156,7 +147,7 @@ export const streamChat = async (
 }
 
 /** Stop stream request */
-export const stopStream = async (backendUrl: string, conversationId: string) => {
+export const stopStream = async (conversationId: string) => {
   try {
     return await get<Record<string, unknown>>(
       `/agent/stop?conversationId=${encodeURIComponent(conversationId)}`
@@ -167,19 +158,18 @@ export const stopStream = async (backendUrl: string, conversationId: string) => 
   }
 }
 
-// ==================== 面试总结（步骤 5） ====================
+// ==================== 面试总结 ====================
 
 /**
  * 上传面试录音。
  *
- * 注意这里是**普通请求**而不是流式：multipart 落 MinIO 本身就要 1~3 秒，
- * 上传成功后前端立刻去开 SSE 流（见 `streamInterview`）。
+ * 这里是**普通请求**而不是 SSE：multipart 落 MinIO 本身要 1~3 秒，
+ * 上传成功后前端立刻去开进度流（见 `streamInterview`）。
  *
  * `conversationId` 是"这场面试属于哪个会话"的唯一凭据：带上它，后端才会在
  * `ai_session` 里写一行，刷新/换设备后仍能从会话列表找到并还原这场面试。
  */
 export const uploadInterviewAudio = async (
-  backendUrl: string,
   file: File,
   conversationId?: string | null,
   signal?: AbortSignal
@@ -193,12 +183,11 @@ export const uploadInterviewAudio = async (
 }
 
 /** 面试总结 SSE 流地址 */
-export const getInterviewStreamUrl = (backendUrl: string, interviewId: string): string =>
+export const getInterviewStreamUrl = (interviewId: string): string =>
   `${apiBase}/interview/${encodeURIComponent(interviewId)}/stream`
 
 /** 查询面试处理状态（断流兜底 / 刷新页面恢复） */
 export const getInterviewStatus = async (
-  backendUrl: string,
   interviewId: string,
   signal?: AbortSignal
 ): Promise<InterviewStatusVo> =>
@@ -206,33 +195,29 @@ export const getInterviewStatus = async (
 
 /** 取结构化报告 */
 export const getInterviewReport = async (
-  backendUrl: string,
   interviewId: string,
   signal?: AbortSignal
 ): Promise<InterviewReport> =>
   get<InterviewReport>(`/interview/${encodeURIComponent(interviewId)}/report`, { signal })
 
 /** 报告 Markdown 下载地址（走浏览器原生下载） */
-export const getInterviewDownloadUrl = (backendUrl: string, interviewId: string): string =>
+export const getInterviewDownloadUrl = (interviewId: string): string =>
   `${apiBase}/interview/${encodeURIComponent(interviewId)}/report/download`
 
 /** 重试：有文字稿只重跑分析，否则重新提交转写 */
-export const retryInterview = async (backendUrl: string, interviewId: string): Promise<void> => {
+export const retryInterview = async (interviewId: string): Promise<void> => {
   await post<string>(`/interview/${encodeURIComponent(interviewId)}/retry`)
 }
 
 /**
- * 发起面试总结 SSE 流。
- *
- * 与 `streamChat` 的区别：后端用的是**具名事件**（`event: xxx` + `data: {...}`），
- * 所以这里只负责把字节流交给调用方，解析交给 `useInterview`。
+ * 发起面试总结 SSE 流。后端用的是**具名事件**（`event: xxx` + `data: {...}`），
+ * 与对话接口的 `type` 字段载荷不同，因此这里只把字节流交给调用方，解析交给 `useInterview`。
  */
 export const streamInterview = async (
-  backendUrl: string,
   interviewId: string,
   signal?: AbortSignal
 ): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; response: Response }> => {
-  const response = await fetch(getInterviewStreamUrl(backendUrl, interviewId), {
+  const response = await fetch(getInterviewStreamUrl(interviewId), {
     method: 'GET',
     credentials: 'include',
     headers: {
@@ -254,6 +239,5 @@ export const streamInterview = async (
   return { reader: response.body.getReader(), response }
 }
 
-// Keep STREAM_TYPES export
 export { STREAM_TYPES, ApiError, UnauthorizedError }
 export type { Reference }

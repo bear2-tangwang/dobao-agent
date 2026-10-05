@@ -18,8 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 文件控制器
- * 提供文件上传、查询等接口
+ * 文件控制器：上传、查询、下载、删除。
  *
  * <p>所有接口都要求登录：文件表的 {@code file_id} 是全局唯一索引，
  * 只按 ID 查询等于"猜到 ID 就能读别人的文件"，因此每个按 ID 的读写
@@ -37,15 +36,12 @@ public class FileController {
     private final GithubOAuthProperties authProperties;
 
     /**
-     * 取当前登录用户ID（未登录时回退兜底用户，保证本地调试可用）
+     * 取当前登录用户ID（未登录时回退配置的兜底用户）
      */
     private String currentUserId() {
         return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
     }
 
-    /**
-     * 上传文件
-     */
     @PostMapping("/upload")
     @Operation(summary = "上传文件", description = "上传文件并返回文件ID，支持PDF、DOC、DOCX、TXT、PNG、JPG等格式")
     public BaseResult<FileInfo> uploadFile(@RequestParam("file") MultipartFile file) {
@@ -57,7 +53,7 @@ public class FileController {
                 return BaseResult.newError("文件不能为空");
             }
 
-            // 上传并处理文件（落库时写入归属用户）
+            // 落库时写入归属用户
             FileInfo fileInfo = fileManageService.uploadFile(file, currentUserId());
             log.info("文件上传成功: fileId={}, userId={}", fileInfo.getFileId(), fileInfo.getUserId());
             return BaseResult.newSuccess(fileInfo);
@@ -68,9 +64,6 @@ public class FileController {
         }
     }
 
-    /**
-     * 获取文件信息
-     */
     @GetMapping("/info/{fileId}")
     @Operation(summary = "获取文件信息", description = "根据文件ID获取文件的基本信息")
     public BaseResult<FileInfo> getFileInfo(@PathVariable String fileId) {
@@ -87,9 +80,6 @@ public class FileController {
         }
     }
 
-    /**
-     * 获取文件内容
-     */
     @GetMapping("/content/{fileId}")
     @Operation(summary = "获取文件内容", description = "根据文件ID获取文件的文本内容")
     public BaseResult<Map<String, Object>> getFileContent(@PathVariable String fileId) {
@@ -110,9 +100,6 @@ public class FileController {
         }
     }
 
-    /**
-     * 删除文件
-     */
     @DeleteMapping("/{fileId}")
     @Operation(summary = "删除文件", description = "根据文件ID删除文件及其内容")
     public BaseResult<String> deleteFile(@PathVariable String fileId) {
@@ -155,7 +142,7 @@ public class FileController {
     }
 
     /**
-     * 检查文件是否存在（仅限自己的文件 —— 否则就成了"探测别人 fileId"的接口）
+     * 检查文件是否存在（仅限自己的文件，否则等于给了个探测别人 fileId 的接口）
      */
     @GetMapping("/exists/{fileId}")
     @Operation(summary = "检查文件是否存在", description = "检查指定文件ID的文件是否存在（限当前用户）")

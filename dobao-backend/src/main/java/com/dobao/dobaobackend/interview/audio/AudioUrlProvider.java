@@ -3,10 +3,10 @@ package com.dobao.dobaobackend.interview.audio;
 /**
  * 音频 URL 提供者：把 MinIO 里的音频转成"百炼能拉取的 URL"。
  *
- * <p>百炼录音文件识别是异步任务式接口，官方明确不支持 Base64、不支持二进制流、不支持本地文件，
- * 只接受**公网可访问的 URL**。因此必须由本接口负责"让音频先有个 URL"。
+ * <p>百炼录音文件识别是异步任务式接口，不接受 Base64、二进制流或本地文件，
+ * 只接受公网可访问的 URL，所以音频必须先有个 URL 才能提交转写。
  *
- * <p>两套实现按 {@code interview.asr.temp-upload-enabled} 切换（见编码方案 §3.3）：
+ * <p>两套实现按 {@code interview.asr.temp-upload-enabled} 切换：
  * <ul>
  *   <li>dev（true）：{@link DashScopeTempUrlProvider} —— 走百炼临时文件上传，本地开发无需公网域名</li>
  *   <li>prod（false）：{@link MinioPublicUrlProvider} —— 拼 MinIO 公网地址</li>

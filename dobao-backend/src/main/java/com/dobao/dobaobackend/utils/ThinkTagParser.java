@@ -4,10 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * &lt;think/&gt; 标签解析器。
- *
- * 无状态工具类，将 LLM 流式输出的文本 chunk 拆分为思考内容和正常文本。
- * 支持跨 chunk 的标签状态追踪（通过 inThink 参数）。
+ * &lt;think/&gt; 标签解析器：把 LLM 流式输出的 chunk 拆成思考内容与正文，
+ * 并跨 chunk 追踪 think 状态。
  *
  * @author bigchui
  */
@@ -29,7 +27,7 @@ public final class ThinkTagParser {
         if (input == null || input.isEmpty()) {
             return input;
         }
-        // 通用正则：匹配 <think...>...</think...>（兼容空格、属性、自闭合等变体）
+        // 兼容 <think ...> / </think ...> 等变体
         String result = input.replaceAll("(?s)<think[^>]*>.*?</think[^>]*>", "").trim();
         return result;
     }

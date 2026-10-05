@@ -15,7 +15,7 @@ import java.util.Objects;
 /**
  * 把转写句子列表**直接格式化**成问答清单。
  *
- * 报告的问答清单用的就是这份映射结果。
+ * <p>报告里的问答清单用的就是这份映射结果（逐字原文，不经过任何模型）。
  */
 @Slf4j
 @Component
@@ -31,18 +31,16 @@ public class QaListBuilder {
      * 明确的告别词。只在"对话末尾 {@value #CLOSING_TAIL_RATIO} 之内"生效，
      * 因此不需要覆盖所有寒暄说法。
      *
-     * <p>词表按**实际转写文本**校准过：实测候选人说"那明儿见啊"，而"明儿见"是
-     * "明儿见"的子串，所以两个都要列（少一个就会漏掉整段结尾截断）。
+     * <p>"明儿见"这类口语转写变体必须逐个列出：少一个就会漏掉整段结尾截断。
      */
     private static final List<String> CLOSING_WORDS = List.of(
-            "拜拜", "再见", "再聊", "回头见", "明儿见", "明儿见", "明天见", "先这样", "先挂", "挂了");
+            "拜拜", "再见", "再聊", "回头见", "明儿见", "明天见", "先这样", "先挂", "挂了");
 
     /**
      * 转写噪音的信号词：脏话、无意义叫喊。
      *
-     * <p>实测末尾那句是"搜狗兄弟欣赏搜狗，我操。"——它显然不是面试对话，
-     * 而是录音结束后环境里的杂音被 ASR 硬识别出来的。这类内容一旦进入报告，
-     * 用户会以为系统在乱读。
+     * <p>录音结束后环境里的杂音（例如末尾一句"……我操。"）会被 ASR 硬识别成对话，
+     * 这类内容一旦进入报告，用户会以为系统在乱读。
      */
     private static final List<String> NOISE_WORDS = List.of("我操", "卧槽", "操你", "妈逼", "傻逼");
 
@@ -150,17 +148,11 @@ public class QaListBuilder {
     }
 
     /**
-     * 截掉结尾的告别寒暄与转写噪音。
+     * 截掉结尾的告别寒暄。
      *
-     * <p>触发条件（两个都要满足，避免误伤正文）：
-     * <ol>
-     *   <li>**最后一条的候选人发言**里出现明确告别词（拜拜/再见/明儿见…）；</li>
-     *   <li>该条的位置在**整份清单的后 {@value #CLOSING_TAIL_RATIO}**。</li>
-     * </ol>
-     *
-     * <p>截断从"最后一条含告别词的条目"开始（含它自己）—— 那条通常只剩
-     * "那明儿见啊""好拜拜"，已经不含任何面试信息；之后的内容实测全是寒暄与噪音
-     * （例如"好还是这个链接啊"、以及末尾一句明显的转写噪音）。
+     * <p>触发条件（两个都要满足，避免误伤正文）：最后一条候选人发言里出现明确告别词，
+     * 且该条位于整份清单的后 {@value #CLOSING_TAIL_RATIO}。
+     * 截断从那条开始（含它自己）—— 它通常只剩"那明儿见啊""好拜拜"，已不含面试信息。
      */
     private List<QaItem> truncateAtClosing(List<QaItem> items, String lastCandidateText) {
         if (items == null || items.isEmpty() || !StringUtils.hasText(lastCandidateText)) {
@@ -170,7 +162,6 @@ public class QaListBuilder {
             return items;
         }
         int start = (int) Math.floor(items.size() * CLOSING_TAIL_RATIO);
-        // 从后往前找最后一条含告别词的条目，它之前的内容全部保留
         for (int i = items.size() - 1; i >= start; i--) {
             if (containsClosingWord(items.get(i).answer())) {
                 List<QaItem> kept = new ArrayList<>(items.subList(0, i));
@@ -195,8 +186,8 @@ public class QaListBuilder {
     /**
      * 丢掉结尾连续的"转写噪音"条目（脏话、无意义叫喊、纯拉丁字母串）。
      *
-     * <p>它是 {@link #truncateAtClosing} 的兜底：实测这段录音的最后一句是
-     * "搜狗兄弟欣赏搜狗，我操。"，里面**没有任何告别词**，靠告别词规则拦不住。
+     * <p>它是 {@link #truncateAtClosing} 的兜底：没有告别词的噪音（例如末尾的
+     * "……我操。"）靠告别词规则拦不住。
      *
      * <p>只从**末尾倒着删连续命中的条目**，一遇到正常条目立刻停手 ——
      * 这样既清掉了末尾噪音，又不会因为中间某句口头语就把后面整段砍掉。
@@ -282,10 +273,9 @@ public class QaListBuilder {
     }
 
     /**
-     * 多句合并成一段：按时间顺序直接拼接，<b>不加任何连接词、不改写</b>。
+     * 多句合并成一段：按时间顺序直接拼接，不加任何连接词、不改写。
      *
-     * <p>中间补一个空格而不是直接相连：转写文本常丢标点（"对吧？" "就是就业打算"），
-     * 直接相连会出现"对吧？就是"这种可读性尚可、但"打算没有"这种会把两个词粘死的情况。
+     * <p>中间补一个空格而不是直接相连：转写文本常丢标点，直连会把相邻两句的词粘死。
      */
     private String joinText(List<SentenceDTO> block) {
         StringBuilder sb = new StringBuilder();

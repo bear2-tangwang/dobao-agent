@@ -120,7 +120,6 @@ public class FileInfo {
 
     /**
      * 判断文件是否为音频（面试录音）
-     * 与 docs/interview-summary-final-spec.md §41 定义的格式一致
      */
     public boolean isAudio() {
         return isAudioType(fileType);

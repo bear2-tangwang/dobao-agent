@@ -8,7 +8,6 @@ import com.dobao.dobaobackend.entity.record.AgentState;
 import com.dobao.dobaobackend.entity.record.RoundMode;
 import com.dobao.dobaobackend.entity.record.RoundState;
 import com.dobao.dobaobackend.entity.record.SearchResult;
-import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
 import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.prompts.ReactAgentPrompts;
 import com.dobao.dobaobackend.service.AgentTaskManager;
@@ -70,7 +69,7 @@ public class ChatReactAgent extends BaseAgent {
     }
 
     /**
-     * 初始化 ChatClient，关闭框架内置的工具自动执行（由本类手动执行工具调用）
+     * 关闭框架内置的工具自动执行：工具调用由本类手动执行。
      */
     private void initChatClient() {
         try {
@@ -96,25 +95,17 @@ public class ChatReactAgent extends BaseAgent {
     }
 
     /**
-     * 流式对话入口（带文件ID）
-     *
-     * @param conversationId 会话ID
-     * @param question       用户问题
-     * @param fileId         关联文件ID（可为空）
+     * 带关联文件ID的流式对话入口。
      */
     public Flux<String> stream(String conversationId, String question, String fileId) {
         this.currentFileId = fileId;
         return streamInternal(conversationId, question);
     }
 
-    /**
-     * 流式对话核心逻辑：组装提示词与历史消息、保存提问、启动首轮推理
-     */
     private Flux<String> streamInternal(String conversationId, String question) {
         List<Message> messages = Collections.synchronizedList(new ArrayList<>());
         boolean useMemory = conversationId != null && chatMemory != null;
 
-        // 同一会话不允许并发执行
         Flux<String> checkResult = checkRunningTask(conversationId);
         if (checkResult != null) {
             return checkResult;
@@ -122,17 +113,14 @@ public class ChatReactAgent extends BaseAgent {
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // 注册任务管理器
         AgentTaskManager.TaskInfo taskInfo = registerTask(conversationId, sink);
         if (taskInfo == null && conversationId != null && taskManager != null) {
             return Flux.error(new IllegalStateException("该会话正在执行中，请稍后再试"));
         }
 
-        //初始化定时器和清空已使用工具
         initTimers();
         clearUsedTools();
 
-        // 统一系统提示词 + 业务自定义提示词
         messages.add(new SystemMessage(ReactAgentPrompts.getUnifiedPrompt()));
         if (StringUtils.isNotBlank(systemPrompt)) {
             messages.add(new SystemMessage(systemPrompt));
@@ -159,17 +147,17 @@ public class ChatReactAgent extends BaseAgent {
             currentSessionId = savedSession.getId();
         }
 
-        AtomicLong roundCounter = new AtomicLong(0); // 记录当前轮次
-        AtomicBoolean hasSentFinalResult = new AtomicBoolean(false); // false : 未发送最终总结结果 ，true : 已发送最终总结结果
-        StringBuilder finalAnswerBuffer = new StringBuilder(); // 累积最终答案
-        StringBuilder thinkingBuffer = new StringBuilder(); // 累积思考过程
+        AtomicLong roundCounter = new AtomicLong(0);
+        AtomicBoolean hasSentFinalResult = new AtomicBoolean(false);
+        StringBuilder finalAnswerBuffer = new StringBuilder();
+        StringBuilder thinkingBuffer = new StringBuilder();
 
-        agentState = new AgentState(); // 保存联网搜索引用来源
+        agentState = new AgentState();
 
         scheduleRound(messages, sink, roundCounter, hasSentFinalResult, finalAnswerBuffer,
                 useMemory, conversationId, agentState, thinkingBuffer);
 
-        // 边流式下发边累积文本，用于结束后统一入库
+        // 边下发边累积，流结束后统一入库
         return sink.asFlux()
                 .doOnNext(chunk -> {
                     try {
@@ -185,14 +173,13 @@ public class ChatReactAgent extends BaseAgent {
                     }
                 })
                 .doOnCancel(() -> {
-                    // 流被取消时，标记为已发送最终总结结果
+                    // 取消后置位，阻止后续轮次继续推进
                     hasSentFinalResult.set(true);
                     if (taskManager != null) {
                         taskManager.stopTask(conversationId);
                     }
                 })
                 .doFinally(signalType -> {
-                    // 流结束时，统一入库会话结果
                     saveSessionResult(conversationId, finalAnswerBuffer, thinkingBuffer);
                     if (taskManager != null) {
                         taskManager.stopTask(conversationId);
@@ -200,9 +187,6 @@ public class ChatReactAgent extends BaseAgent {
                 });
     }
 
-    /**
-     * 将本轮问答结果（答案、思考过程、工具、引用、推荐问题、耗时）写入数据库
-     */
     private void saveSessionResult(String conversationId, StringBuilder finalAnswerBuffer, StringBuilder thinkingBuffer) {
         if (sessionService != null && currentSessionId != null && finalAnswerBuffer.length() > 0) {
             long totalResponseTime = getTotalResponseTime();
@@ -226,9 +210,6 @@ public class ChatReactAgent extends BaseAgent {
         }
     }
 
-    /**
-     * 发起一轮模型流式推理，并挂载完成/异常回调
-     */
     private void scheduleRound(List<Message> messages, Sinks.Many<String> sink, AtomicLong roundCounter,
                                AtomicBoolean hasSentFinalResult, StringBuilder finalAnswerBuffer,
                                boolean useMemory, String conversationId, AgentState agentState,
@@ -241,8 +222,8 @@ public class ChatReactAgent extends BaseAgent {
                 .stream()
                 .chatResponse()
                 .publishOn(Schedulers.boundedElastic())
-                .doOnNext(chunk -> processChunk(chunk, sink, state))  // 处理每一段chunk，根据是否有工具调用判断是否需要累积
-                .doOnComplete(() -> finishRound(messages, sink, state, roundCounter,  // 完成本轮问答 React -> think
+                .doOnNext(chunk -> processChunk(chunk, sink, state))
+                .doOnComplete(() -> finishRound(messages, sink, state, roundCounter,
                         hasSentFinalResult, finalAnswerBuffer, useMemory, conversationId, agentState, thinkingBuffer))
                 .doOnError(err -> {
                     if (!hasSentFinalResult.get()) {
@@ -257,9 +238,6 @@ public class ChatReactAgent extends BaseAgent {
         }
     }
 
-    /**
-     * 处理单个流式分片：有工具调用则累积工具调用，否则作为正文下发
-     */
     private void processChunk(ChatResponse chunk, Sinks.Many<String> sink, RoundState state) {
         if (chunk == null || chunk.getResult() == null || chunk.getResult().getOutput() == null) {
             return;
@@ -300,25 +278,18 @@ public class ChatReactAgent extends BaseAgent {
         state.toolCalls.add(incoming);
     }
 
-    /**
-     * 单轮结束处理：无工具调用则输出最终答案；有工具调用则执行工具并进入下一轮
-     */
     private void finishRound(List<Message> messages, Sinks.Many<String> sink, RoundState state,
                              AtomicLong roundCounter, AtomicBoolean hasSentFinalResult, StringBuilder finalAnswerBuffer,
                              boolean useMemory, String conversationId, AgentState agentState, StringBuilder thinkingBuffer) {
-        // 无工具调用，直接输出最终答案
         if (state.getMode() != RoundMode.TOOL_CALL) {
             String finalText = state.textBuffer.toString();
 
-            // 附加联网搜索引用来源
             if (!agentState.searchResults.isEmpty()) {
                 String reference = JSON.toJSONString(agentState.searchResults);
                 sink.tryEmitNext(createReferenceResponse(reference));
             }
 
-            // 生成推荐追问问题
             if (enableRecommendations) {
-                // TODO 响应很慢， 后续优化
                 String recommendations = generateRecommendations(conversationId, currentQuestion, finalText);
                 if (recommendations != null) {
                     currentRecommendations = recommendations;
@@ -326,7 +297,6 @@ public class ChatReactAgent extends BaseAgent {
                 }
             }
 
-            // 发送最终总结结果
             sink.tryEmitComplete();
             hasSentFinalResult.set(true);
             return;
@@ -345,7 +315,7 @@ public class ChatReactAgent extends BaseAgent {
             if (!hasSentFinalResult.get()) {
                 scheduleRound(messages, sink, roundCounter,
                         hasSentFinalResult, finalAnswerBuffer,
-                        useMemory, conversationId, agentState, thinkingBuffer); // 执行下一轮 React -> think
+                        useMemory, conversationId, agentState, thinkingBuffer);
             }
         });
     }
@@ -379,7 +349,7 @@ public class ChatReactAgent extends BaseAgent {
 
         StringBuilder finalTextBuffer = new StringBuilder();
 
-        // 强制输出最终答案：不再解析工具调用，收到文本直接下发
+        // 收尾轮不再解析工具调用，收到的文本直接下发
         Disposable disposable = chatClient.prompt()
                 .messages(messages)
                 .stream()
@@ -426,7 +396,7 @@ public class ChatReactAgent extends BaseAgent {
     }
 
     /**
-     * 顺序执行本轮所有工具调用，并把工具结果写回消息上下文
+     * 顺序执行本轮所有工具调用（不并发），并把结果写回消息上下文。
      */
     private void executeToolCalls(Sinks.Many<String> sink, List<AssistantMessage.ToolCall> toolCalls, List<Message> messages,
                                   AtomicBoolean hasSentFinalResult, RoundState state, AgentState agentState, Runnable onComplete) {
@@ -444,7 +414,6 @@ public class ChatReactAgent extends BaseAgent {
                 continue;
             }
 
-            // 文件检索工具：向前端推送思考提示
             if (toolName.contains("loadContent") && StringUtils.isNotBlank(argsJson)) {
                 try {
                     JSONObject args = JSON.parseObject(argsJson);
@@ -454,11 +423,9 @@ public class ChatReactAgent extends BaseAgent {
                             : "📄 正在检索文件内容...\n";
                     sink.tryEmitNext(createThinkingResponse(think));
                 } catch (Exception ignore) {
-                    // 忽略参数解析异常
                 }
             }
 
-            // 联网搜索工具：向前端推送思考提示
             if (toolName.contains("search") && StringUtils.isNotBlank(argsJson)) {
                 try {
                     JSONObject args = JSON.parseObject(argsJson);
@@ -468,7 +435,6 @@ public class ChatReactAgent extends BaseAgent {
                             : "🔍 正在搜索相关信息\n";
                     sink.tryEmitNext(createThinkingResponse(think));
                 } catch (Exception ignore) {
-                    // 忽略参数解析异常
                 }
             }
 
@@ -481,7 +447,6 @@ public class ChatReactAgent extends BaseAgent {
                         .build());
                 recordUsedTool(toolName);
 
-                // 联网搜索结果解析为引用来源
                 if (toolName.contains("tavily")) {
                     parseSearchResult(result.toString(), agentState);
                 }
@@ -494,7 +459,7 @@ public class ChatReactAgent extends BaseAgent {
     }
 
     /**
-     * 解析 Tavily 搜索结果，提取引用来源（url/标题/摘要）
+     * 解析 Tavily 返回的 JSON，提取 url/标题/摘要写入 AgentState。
      */
     private void parseSearchResult(String resultJson, AgentState state) {
         try {
@@ -535,17 +500,11 @@ public class ChatReactAgent extends BaseAgent {
         }
     }
 
-    /**
-     * 安全读取JSON节点文本，不存在或为null时返回null
-     */
     private String getSafe(JsonNode node, String field) {
         JsonNode v = node.get(field);
         return v == null || v.isNull() ? null : v.asText();
     }
 
-    /**
-     * 向消息上下文写入工具执行失败的响应
-     */
     private void addErrorToolResponse(List<Message> messages, AssistantMessage.ToolCall toolCall, String errMsg) {
         ToolResponseMessage.ToolResponse tr = new ToolResponseMessage.ToolResponse(
                 toolCall.id(),
@@ -557,9 +516,6 @@ public class ChatReactAgent extends BaseAgent {
                 .build());
     }
 
-    /**
-     * 按名称查找已注册的工具回调
-     */
     private ToolCallback findTool(String name) {
         return tools.stream()
                 .filter(t -> t.getToolDefinition().name().equals(name))
@@ -575,9 +531,6 @@ public class ChatReactAgent extends BaseAgent {
         return new Builder();
     }
 
-    /**
-     * ChatReactAgent 构建器
-     */
     public static class Builder {
         private String name;
         private ChatModel chatModel;

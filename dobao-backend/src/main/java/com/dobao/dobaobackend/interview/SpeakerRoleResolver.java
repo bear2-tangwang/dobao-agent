@@ -16,20 +16,10 @@ import java.util.List;
 /**
  * 说话人角色判定：用 LLM 判断哪个 {@code speaker_id} 是面试官。
  *
- * <p><b>为什么必须用 LLM 而不是规则</b>：
- * <ul>
- *   <li>百炼的 {@code speaker_id} 是声学聚类编号，<b>跨任务没有稳定含义</b>
- *       （同一场里 0 可能是候选人，另一场可能是面试官），无法用规则映射；</li>
- *   <li>也不能只看说话时长 —— 面试官可能长篇介绍公司/团队/流程
- *       （步骤 0 的录音正是如此），时长会误导。</li>
- * </ul>
+ * <p>必须用 LLM：百炼的 {@code speaker_id} 是声学聚类编号，跨任务没有稳定含义；
+ * 也不能只看时长 —— 面试官可能长篇介绍公司/团队/流程，时长会误导。
  *
- * <p>输入是<b>采样后</b>的片段（开头 + 中段 + 尾段），因为判定只需要少量代表性对话，
- * 整篇送进去既浪费 token 又可能超出上下文。
- *
- * <p>规格把 {@code speaker_count} 固定为 2，所以"另一个编号"就是候选人；
- * 该编号需要时由调用方从 {@link NormalizedTranscript#speakerIds()} 里自行推导，
- * 本类不额外提供访问方法。
+ * <p>输入是采样后的片段（开头 + 中段 + 尾段），判定只需要少量代表性对话。
  */
 @Slf4j
 @Component
@@ -65,7 +55,7 @@ public class SpeakerRoleResolver {
 
         Integer interviewerId = judgment.interviewerSpeakerId();
         if (interviewerId == null || !transcript.speakerIds().contains(interviewerId)) {
-            // 模型偶尔会给出输入里不存在的编号（如 2），必须拦住，否则后续问答清单全错
+            // 模型偶尔会给出输入里不存在的编号，必须拦住，否则后续问答清单全错
             throw new IllegalStateException("角色判定返回了不存在的说话人编号: "
                     + interviewerId + "，实际编号=" + transcript.speakerIds());
         }
@@ -74,9 +64,7 @@ public class SpeakerRoleResolver {
         return judgment;
     }
 
-    /**
-     * 采样：开头 + 中段 + 尾段各 {@value #SAMPLE_WINDOW} 句；总量不足时全取。
-     */
+    /** 采样：开头 + 中段 + 尾段各 {@value #SAMPLE_WINDOW} 句；总量不足时全取。 */
     private String sampleDialogue(NormalizedTranscript transcript) {
         List<SentenceDTO> all = transcript.sentences();
         List<SentenceDTO> picked = new ArrayList<>();

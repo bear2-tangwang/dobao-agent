@@ -9,7 +9,6 @@ import reactor.core.publisher.Sinks;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Agent任务管理器
@@ -59,11 +58,6 @@ public class AgentTaskManager {
      * 会话ID -> 任务信息的映射
      */
     private final Map<String, TaskInfo> taskMap = new ConcurrentHashMap<>();
-
-    /**
-     * 任务ID计数器
-     */
-    private final AtomicLong taskIdCounter = new AtomicLong(0);
 
     /**
      * 注册任务

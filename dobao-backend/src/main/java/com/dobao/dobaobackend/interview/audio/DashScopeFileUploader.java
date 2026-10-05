@@ -17,13 +17,13 @@ import org.springframework.web.client.RestClient;
 /**
  * 百炼官方"临时文件上传"客户端：取上传凭证 → POST 音频到 OSS → 返回 {@code oss://} 地址。
  *
- * <p>实现细节直接沿用了步骤 0 探针脚本踩出来的三条经验（都是有代价的坑）：
+ * <p>三条必须遵守的表单约束：
  * <ol>
- *   <li><b>file 部件必须用纯 ASCII 的 {@code filename="file"}</b>。OSS 上传表单不认
- *       RFC 5987 的 {@code filename*=UTF-8''...}，会退化成"整个 body 当成一个文本字段"，
- *       最终报 {@code FieldItemTooLong}。真实文件名放在 {@code key} 表单字段里传。</li>
+ *   <li>file 部件要用纯 ASCII 的 {@code filename="file"}。OSS 上传表单不认 RFC 5987 的
+ *       {@code filename*=UTF-8''...}，会退化成"整个 body 当成一个文本字段"，报
+ *       {@code FieldItemTooLong}；真实文件名放在 {@code key} 表单字段里传。</li>
  *   <li>文本字段先写、file 部件最后写（与表单顺序一致）。</li>
- *   <li>凭证接口有 100 QPS 限制且官方声明"请勿用于生产环境"，因此 prod 必须切到
+ *   <li>凭证接口有 100 QPS 限制且官方声明"请勿用于生产环境"，prod 必须切到
  *       {@link MinioPublicUrlProvider}。</li>
  * </ol>
  */

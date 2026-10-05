@@ -77,8 +77,8 @@ class InterviewServiceTest {
         taskService = mock(InterviewTaskService.class);
         sessionRecorder = mock(InterviewSessionRecorder.class);
         sessionService = mock(AiSessionService.class);
-        // 归属用户来自配置：未登录（测试里没有请求上下文）时用它兜底，
-        // 断言里也用这个值，避免测试写死在 "default" 字面量上
+        // 归属用户取配置的兜底值（测试无请求上下文），断言里也用同一个值，
+        // 而不是把 "u-default" 字面量写死在两处
         authProperties = new GithubOAuthProperties();
         authProperties.setDefaultUserId("u-default");
         service = new InterviewService(properties, interviewMapper, fileManageService,
@@ -107,8 +107,8 @@ class InterviewServiceTest {
         assertEquals(uploaded.interviewId(), interviewId.getValue());
         assertEquals("interView.m4a", fileName.getValue());
 
-        // 快路径的核心副作用是"落 ai_interview"这一行：光断言返回值和会话行，
-        // 删掉 insert 也照样绿（存活变异体），所以这里必须把入库的记录本身钉住。
+        // 快路径的核心副作用是"落 ai_interview"这一行：只断言返回值和会话行的话，
+        // 删掉 insert 也照样绿，所以这里必须把入库的记录本身钉住。
         ArgumentCaptor<AiInterview> recordCaptor = ArgumentCaptor.forClass(AiInterview.class);
         verify(interviewMapper).insert(recordCaptor.capture());
         AiInterview saved = recordCaptor.getValue();
@@ -149,8 +149,8 @@ class InterviewServiceTest {
         existing.setStatus(InterviewStatus.READY.name());
         existing.setFileName("interView.m4a");
         existing.setFileId("file-9");
-        // 用真实 ObjectMapper 序列化一份报告：report_json 在库里就是这个形态，
-        // 手写 JSON 字符串会与 record 结构脱节（字段改名后测试仍然"绿"）
+        // 用真实 ObjectMapper 序列化报告：report_json 在库里就是这个形态，手写 JSON 字符串
+        // 会与 record 结构脱节（字段改名后测试仍然"绿"）
         InterviewReport report = new InterviewReport("iv-9", 1000L, null,
                 List.of(new QaItem("Q001", "什么是索引下推？", 0L, "把过滤条件下推到引擎层…", 1000L, 5000L),
                         new QaItem("Q002", "介绍一下 MVCC", 6000L, "多版本并发控制…", 7000L, 12000L)),
@@ -246,14 +246,15 @@ class InterviewServiceTest {
         assertEquals(InterviewStatus.UPLOADED.name(), uploaded.status());
         verify(interviewMapper).insert(any(AiInterview.class));
         verify(taskService).submitTranscriptionAsync(eq(uploaded.interviewId()), anyString());
-        // 透传原值（controller 在 ?conversationId= 时给的是 ""，"   " 也照样原样传），
+        // 原样透传（controller 在 ?conversationId= 时给的是 ""，"   " 也照样传原值）：
         // trim 与"退化为只写 ai_interview"都在 Recorder 内部收口
         verify(sessionRecorder).recordUploaded(eq(conversationId), eq(uploaded.interviewId()),
                 eq("interView.m4a"), eq("u-default"));
     }
 
     /** 一条已完成的面试记录：报告对象 + 录音对象都在 MinIO 里 */
-    private AiInterview finishedInterview() {        AiInterview record = new AiInterview();
+    private AiInterview finishedInterview() {
+        AiInterview record = new AiInterview();
         record.setInterviewId("iv-1");
         record.setReportFileName("interview-report-iv-1.md");
         record.setFileId("file-1");
@@ -265,7 +266,7 @@ class InterviewServiceTest {
     @DisplayName("级联删除面试：报告对象与录音对象都从 MinIO 删掉，再删 ai_interview 记录")
     void deleteInterviews_removesObjectsThenRows() throws Exception {
         when(interviewMapper.selectOne(any())).thenReturn(finishedInterview());
-        // 显式打桩"没有被别的会话引用"：Mockito 默认就是 0，但写出来意图才清楚
+        // 显式打桩"没有被别的会话引用"：Mockito 默认就是 0，但写出来意图更清楚
         when(sessionService.count(any())).thenReturn(0L);
 
         service.deleteInterviews(List.of("iv-1"), "conv-1");

@@ -22,11 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 报告归纳的落地校验测试。
+ * 报告归纳的清洗规则：模型给什么，代码就要按既定规则落成什么。
  *
- * <p>用<b>手写 stub</b> 顶替 LLM（{@link LlmJsonSupport} 的构造只依赖 ChatModel，
- * 不注入 Spring 容器），因此这些断言完全离线、可复现：
- * 模型给什么，代码就该按既定规则清洗成什么。
+ * <p>用手写 stub 顶替 LLM（{@link LlmJsonSupport} 的构造只依赖 ChatModel，不注入 Spring 容器），
+ * 因此断言完全离线、可复现。
  */
 class InterviewReportGeneratorTest {
 

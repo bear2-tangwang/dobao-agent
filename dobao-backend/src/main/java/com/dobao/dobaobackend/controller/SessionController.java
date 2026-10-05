@@ -31,11 +31,10 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * 会话控制器
- * 提供会话详情查询、会话列表分页查询、会话删除接口
+ * 会话控制器：详情查询、列表分页查询、删除。
  *
- * <p>所有接口都按归属用户过滤 —— 这是"数据能区分用户"的落点。
- * 越权访问一律按"会话不存在"回应（不回 403），避免泄露"这个 ID 真实存在"。
+ * <p>所有接口都按归属用户过滤；越权访问一律按"会话不存在"回应（不回 403），
+ * 避免泄露"这个 ID 真实存在"。
  */
 @RestController
 @RequestMapping("/session")
@@ -43,6 +42,15 @@ import java.util.stream.Collectors;
 @LoginRequired
 @Slf4j
 public class SessionController {
+
+    /**
+     * 会话表名，与 {@link AiSession} 上的 {@code @TableName("ai_session")} 对应。
+     *
+     * <p>列表查询的去重子查询要自己 FROM 一次这张表（见 {@code getSessionList}），
+     * 而 MyBatis-Plus 的 Wrapper 没有"拿到实体表名"的公开入口，所以在此留一个常量：
+     * 改表名时两处都要改（单测会断言这段 SQL 的形状）。
+     */
+    private static final String SESSION_TABLE = "ai_session";
 
     @Autowired
     private AiSessionService aiSessionService;
@@ -117,14 +125,9 @@ public class SessionController {
     /**
      * 分页查询会话列表（同一会话只保留最新一条记录）
      *
-     * <p>只列当前用户的会话。这里的 SQL 有两个必须一起处理的点：
-     * <ol>
-     *   <li><b>用户过滤要下推到子查询里</b>。若写成"外层 WHERE user_id=? + 子查询
-     *       MAX(id) GROUP BY session_id"，子查询会把所有用户的行都参与去重，
-     *       一旦别人先写了同一个 session_id，你的那行就被 MAX 淘汰、整个会话凭空消失；</li>
-     *   <li>去重与 agentType 过滤都在同一个子查询里完成，避免"先去重再过滤"把
-     *       混排会话（先 chat 后面试）整体滤掉 —— 这是原实现的潜伏问题。</li>
-     * </ol>
+     * <p>只列当前用户的会话，去重子查询有两个必须一起满足的点：
+     * 用户过滤（以及 agentType 过滤）要下推到子查询内部；
+     * 去重必须落成真正的相关子查询。
      */
     @GetMapping("/list")
     @Operation(summary = "获取会话列表", description = "分页查询当前用户的会话列表")
@@ -137,20 +140,35 @@ public class SessionController {
                 pageNum, pageSize, agentType, userId);
 
         try {
-            // 子查询：在当前用户（可选地再加 agentType）范围内，按 session_id 分组取最大 id。
-            // 用户条件必须出现在子查询里，见方法注释。
-            LambdaQueryWrapper<AiSession> subQuery = new LambdaQueryWrapper<AiSession>()
-                    .select(AiSession::getId)
-                    .eq(AiSession::getUserId, userId);
-            if (StringUtils.hasText(agentType)) {
-                subQuery.eq(AiSession::getAgentType, agentType);
-            }
-            subQuery.groupBy(AiSession::getSessionId);
+            /*
+             * 去重语义：每个 session_id 只保留"当前用户（可选地再加 agentType）范围内 id 最大"的那一行。
+             *
+             * ⚠️ 用户条件必须写在子查询内部：写在外层会让所有用户的行一起参与去重，
+             * 别人先占用了同一个 session_id 时自己那行会被 MAX 淘汰、整个会话消失。
+             *
+             * ⚠️ 不能改回 `.in(AiSession::getId, wrapper)`：MyBatis-Plus 的 `in` 只有
+             * (列, Collection) 与 (列, Object...) 两个重载，传 Wrapper 会命中后者、被当成一个
+             * 普通绑定值，生成 `id IN (?)` —— 子查询根本没进 SQL，MySQL 拿对象字符串比 bigint，
+             * 不报错但静默返回 0 行。
+             *
+             * 这里用 apply + {0}/{1} 占位符：子查询真的进 SQL，用户ID/agentType 仍是参数绑定
+             *（不是字符串拼接），不存在注入面。
+             */
+            boolean hasAgentType = StringUtils.hasText(agentType);
+            String dedupeSql = "id = (SELECT MAX(s2.id) FROM " + SESSION_TABLE + " s2"
+                    + " WHERE s2.session_id = " + SESSION_TABLE + ".session_id"
+                    + " AND s2.user_id = {0}"
+                    + (hasAgentType ? " AND s2.agent_type = {1}" : "")
+                    + ")";
 
             LambdaQueryWrapper<AiSession> queryWrapper = new LambdaQueryWrapper<AiSession>()
-                    .eq(AiSession::getUserId, userId)
-                    .in(AiSession::getId, subQuery)
-                    .orderByDesc(AiSession::getUpdateTime);
+                    .eq(AiSession::getUserId, userId);
+            if (hasAgentType) {
+                queryWrapper.apply(dedupeSql, userId, agentType);
+            } else {
+                queryWrapper.apply(dedupeSql, userId);
+            }
+            queryWrapper.orderByDesc(AiSession::getUpdateTime);
 
             Page<AiSession> page = new Page<>(pageNum, pageSize);
             Page<AiSession> resultPage = aiSessionService.page(page, queryWrapper);
@@ -184,8 +202,7 @@ public class SessionController {
      * 靠 {@code @Transactional(rollbackFor = Exception.class)} 保证"要么全成、要么全不动"。
      * 一旦把异常吞掉改成 {@code return BaseResult.newError(...)}，方法就"正常返回"了，
      * 事务拦截器不会回滚 —— 那就是"MinIO 对象删了、DB 只删了一半"的半状态。
-     * 因此异常必须抛出（由 Spring 转成 500，前端 `deleteChat` 已按请求失败处理）。
-     * 会话不存在是业务分支，直接返回错误码，不抛。
+     * 因此异常必须抛出（由 Spring 转成 500）。会话不存在是业务分支，直接返回错误码，不抛。
      */
     @DeleteMapping("/{conversationId}")
     @Operation(summary = "删除会话", description = "删除会话及其关联数据")
@@ -236,7 +253,7 @@ public class SessionController {
     /**
      * 将会话记录转换为消息VO，并补齐关联文件信息。
      *
-     * <p>面试会话要单独走一条分支：它的 {@code fileid} 存的是 interviewId（见
+     * <p>面试会话单独走一条分支：它的 {@code fileid} 存的是 interviewId（见
      * {@link InterviewSessionRecorder}），不是 ai_file_info.file_id —— 拿它去查文件表只会白查一次。
      * 文件名直接用 {@code question}（= 录音文件名），前端据此渲染录音 chip，并用 interviewId
      * 去还原进度与报告。
@@ -272,7 +289,7 @@ public class SessionController {
     }
 
     /**
-     * 规范化智能体类型，历史类型统一归并为chat
+     * 规范化智能体类型：websearch/file 归并为 chat
      */
     private String normalizeAgentType(String agentType) {
         if (!StringUtils.hasText(agentType)) {

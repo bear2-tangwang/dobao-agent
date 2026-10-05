@@ -5,8 +5,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 /**
- * Plan-Execute Agent 提示词
- * 用于 PlanExecuteAgent 的各个阶段提示词
+ * Plan-Execute Agent 各阶段提示词
  */
 public final class PlanExecutePrompts {
 
@@ -15,7 +14,7 @@ public final class PlanExecutePrompts {
 
     /**
      * 获取当前系统时间
-     * 时间信息作为独立的上下文注入，不包含在提示词模板中
+     * 时间由调用方作为独立上下文拼入，不写死在提示词模板里
      */
     public static String getCurrentTime() {
         return "当前正确的系统时间：" + LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
@@ -266,8 +265,7 @@ public final class PlanExecutePrompts {
 
 
     /**
-     * 需求澄清提示词
-     * 用于判断用户的问题是否需要补充更多信息
+     * 需求澄清：判断用户问题的信息是否足够开展研究
      */
     public static final String REQUIREMENT_CLARIFICATION = """
             你是【Deep Research 需求分析专家】，只做需求清晰度判断，不直接解答问题。
@@ -306,8 +304,7 @@ public final class PlanExecutePrompts {
             """;
 
     /**
-     * 研究主题生成提示词
-     * 用于列出用户问题需要研究的具体分析点
+     * 研究主题生成：列出用户问题需要研究的具体分析点
      */
     public static final String RESEARCH_TOPIC_GENERATION = """
             你是【Deep Research 分析点规划专家】。

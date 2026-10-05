@@ -20,9 +20,6 @@ public class MinioClientConfiguration {
     @Value("${minio.secret-key}")
     private String secretKey;
 
-    /**
-     * 构建 MinIO 客户端
-     */
     @Bean
     public MinioClient minioClient() {
         return MinioClient.builder()

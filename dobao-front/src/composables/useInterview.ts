@@ -18,41 +18,34 @@ import type {
 } from '@/types'
 
 /**
- * 面试总结 · 上传 + 流式进度（编码方案步骤 5）。
+ * 面试总结 · 上传 + 流式进度。
  *
  * <h3>两条通道，各管一件事</h3>
  * <ul>
  *   <li><b>SSE 流（`GET /interview/{id}/stream`）</b>：把"已经发生的事"实时推给页面，
- *       让用户在 2~8 分钟的处理期里看到进度，而不是干等一个转圈。</li>
- *   <li><b>轮询兜底（`GET /interview/{id}/status`）</b>：流断掉（切标签页、锁屏、代理超时、
- *       后端还没实现该端点）时接管，每 3~10 秒自动拉一次，直到终态。</li>
+ *       让用户在数分钟的处理期里看到进度。</li>
+ *   <li><b>轮询兜底（`GET /interview/{id}/status`）</b>：流断掉（切标签页、锁屏、代理超时）时接管。</li>
  * </ul>
  *
  * <p><b>为什么兜底不能省</b>：真正的事实来源是数据库 + MinIO（后端是 `@Async` 后台任务，
- * 断线照跑），流只是通知。任何长连接都撑不住 40 分钟，所以"流断了进度就丢"是不可接受的；
- * 反过来只做轮询又会留下 2~8 分钟的空白期。两条都要。
+ * 断线照跑），流只是通知；而任何长连接都撑不住整场处理时长。反过来只做轮询又会留下
+ * 处理期的空白。两条都要。
  *
- * <p><b>去重</b>：流和兜底可能报同一件事（比如都报"转写完成"），
- * 因此每个阶段有稳定的语义 key（{@link InterviewStepKey}），相同 key 只记一条，
- * 只更新文案 —— 这样用户不会看到"转写完成"出现两次。
+ * <p><b>去重</b>：流和兜底可能报同一件事，因此每个阶段有稳定的语义 key
+ * （{@link InterviewStepKey}），相同 key 只更新文案，不重复记一条。
  *
  * <h3>为什么 session 由调用方传入，而不是在 composable 内部持有一个</h3>
- * 进度是一条条异步推进来的，`pushStep()` 必须改到**消息气泡真正渲染的那个对象**上，
- * 否则界面要等整场跑完才刷新（拷贝切断了响应式，见 `docs/interview-step5-frontend.md` §5）。
- *
- * <p>但"整个应用只保留一个 session"又会踩另一个坑：一个会话里做第二场面试时，
- * `Object.assign` 会把第一场的报告就地清空，第一场的气泡只剩一个空壳。
- * 所以现在的约定是：**每一条面试消息各自拥有一个 session 对象**（`Message.interview`），
- * 本 composable 的所有方法都接收这个对象作为参数，只做**就地修改**、从不替换对象 ——
- * 既保住了响应式，又让多场面试互不影响。
+ * <p>`pushStep()` 必须改到**消息气泡真正渲染的那个对象**上，否则界面要等整场跑完才刷新
+ * （拷贝会切断响应式）。同时"整个应用只保留一个 session"也不行：一个会话里做第二场面试时，
+ * `Object.assign` 会把第一场的报告就地清空。所以约定是**每条面试消息各自拥有一个 session**
+ * （`Message.interview`），本 composable 只**就地修改**、从不替换对象。
  */
 
 /**
  * 兜底轮询参数。
  *
- * <p>SSE 是主通道，轮询只在"流重连也失败"时才启动；首轮间隔取 {@value #POLL_INITIAL_MS} 毫秒：
- * 实测单个阶段（问答整理、报告收尾）可能只有十几秒，间隔太长会整段错过，
- * 上限也不再放到 45 秒（那等于用户的每一步都慢半拍）。
+ * <p>SSE 是主通道，轮询只在"流重连也失败"时才启动；间隔取 5 秒起步，
+ * 因为单个阶段可能只有十几秒，间隔太长会整段错过。
  */
 const POLL_INITIAL_MS = 5000
 const POLL_MAX_MS = 30000
@@ -61,9 +54,9 @@ const POLL_BACKOFF = 1.4
 /**
  * 断流后的重连退避（毫秒）。
  *
- * <p>长连接被代理/tab 挂起掐断是常态，而重连是**零成本**的：后端每次连接都会先补一帧
- * snapshot（当前状态、句数、说话人数都在），所以重连不会丢阶段、也不会重复记步骤
- * （步骤按语义 key 去重）。用尽这些退避仍然拿不到终态，才降级为轮询。
+ * <p>长连接被代理/tab 挂起掐断是常态，而重连是零成本的：后端每次连接都会先补一帧
+ * snapshot（当前状态、句数、说话人数都在），所以重连不会丢阶段、也不会重复记步骤。
+ * 用尽这些退避仍拿不到终态，才降级为轮询。
  */
 const STREAM_RETRY_DELAYS_MS = [1000, 3000, 6000, 10000]
 
@@ -94,7 +87,7 @@ export const isTerminalInterviewStatus = (status: string): boolean => TERMINAL_S
  * 一场面试的初始 session。
  *
  * <p>每条面试消息在创建时各自调用一次，得到的是**互相独立**的对象；
- * 换一场面试时用 `Object.assign(session, createInterviewSession())` 就地重置字段
+ * 重置时用 `Object.assign(session, createInterviewSession())` 就地覆盖字段
  * （而不是换新对象），消息气泡的引用才不会断。
  */
 export const createInterviewSession = (): InterviewSession => ({
@@ -113,7 +106,7 @@ export const createInterviewSession = (): InterviewSession => ({
   stopped: false
 })
 
-export function useInterview(backendUrl: { value: string }) {
+export function useInterview() {
   /** 流 + 轮询共用的取消句柄：stop 时一起断掉 */
   let abortController: AbortController | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
@@ -121,9 +114,8 @@ export function useInterview(backendUrl: { value: string }) {
   /**
    * 某一场面试是否还在处理中。
    *
-   * <p>是普通函数而不是 computed：界面上同时可能存在多条面试消息，
-   * 谁在跑要看各自的 session。在模板里调用它同样会被依赖收集到（渲染副作用里读到了
-   * session 的字段），所以进度一变就会重新渲染。
+   * <p>是普通函数而不是 computed：界面上同时可能存在多条面试消息，谁在跑要看各自的
+   * session。在模板里调用它同样会被依赖收集到（渲染副作用里读到了 session 的字段）。
    */
   const isProcessing = (session: InterviewSession | null | undefined): boolean => {
     if (!session) {
@@ -139,19 +131,15 @@ export function useInterview(backendUrl: { value: string }) {
     )
   }
 
-  // ==================== 状态与步骤维护 ====================
-
   /**
-   * 就地重置一场面试（**不换对象**，见文件头的说明）。
-   * 用 `Object.assign` 一次性覆盖全部字段，避免漏掉某个字段导致上一场的残留。
+   * 就地重置一场面试（**不换对象**，见文件头）。
+   * 用 `Object.assign` 一次性覆盖全部字段，避免上一场的残留。
    */
   const resetSession = (session: InterviewSession) => {
     Object.assign(session, createInterviewSession())
   }
 
-  /**
-   * 记一条进度。同 key 只保留一条（更新文案），避免流与兜底重复记录。
-   */
+  /** 记一条进度。同 key 只保留一条（更新文案），避免流与兜底重复记录。 */
   const pushStep = (session: InterviewSession, key: InterviewStepKey, text: string, done = false) => {
     const steps = session.steps as InterviewStep[]
     const existing = steps.find(step => step.key === key)
@@ -164,8 +152,6 @@ export function useInterview(backendUrl: { value: string }) {
     }
     steps.push({ key, text, done })
   }
-
-  // ==================== 入口 ====================
 
   /**
    * 上传音频并开始处理，进度写进调用方给的 session。
@@ -187,7 +173,7 @@ export function useInterview(backendUrl: { value: string }) {
     abortController = new AbortController()
     let uploaded: InterviewUploadVo
     try {
-      uploaded = await uploadInterviewAudio(backendUrl.value, file, conversationId, abortController.signal)
+      uploaded = await uploadInterviewAudio(file, conversationId, abortController.signal)
     } finally {
       session.uploading = false
     }
@@ -210,9 +196,7 @@ export function useInterview(backendUrl: { value: string }) {
     await runProgress(session)
   }
 
-  /**
-   * 直接对某个 interviewId 开始接收进度（重试、或从历史记录恢复时用）。
-   */
+  /** 直接对某个 interviewId 开始接收进度（重试、或从历史记录恢复时用）。 */
   const startById = async (interviewId: string, session: InterviewSession, fileName: string | null = null) => {
     stop()
     resetSession(session)
@@ -222,9 +206,7 @@ export function useInterview(backendUrl: { value: string }) {
     await runProgress(session)
   }
 
-  /**
-   * 处理失败后重试：有文字稿只重跑分析，否则重新提交转写（后端 `retry` 里判断）。
-   */
+  /** 处理失败后重试：有文字稿只重跑分析，否则重新提交转写（后端 `retry` 里判断）。 */
   const retry = async (session: InterviewSession) => {
     const id = session.interviewId
     if (!id) {
@@ -232,7 +214,7 @@ export function useInterview(backendUrl: { value: string }) {
     }
     session.errorMsg = null
     session.degraded = false
-    await retryInterview(backendUrl.value, id)
+    await retryInterview(id)
     pushStep(session, 'analyzing', '已触发重试，正在继续处理…')
     await runProgress(session)
   }
@@ -249,8 +231,6 @@ export function useInterview(backendUrl: { value: string }) {
     }
   }
 
-  // ==================== 进度通道 ====================
-
   const runProgress = async (session: InterviewSession) => {
     if (!session.interviewId) {
       return
@@ -264,9 +244,8 @@ export function useInterview(backendUrl: { value: string }) {
     if (session.status === INTERVIEW_STATUS.READY || session.errorMsg || session.stopped) {
       return
     }
-    // 走到这里说明流没能把这场面试带到终态。**无论"正常结束"还是报错都算降级**：
-    // 早期实现只在抛错时置位，流被中间层静默掐断时页面会一直冻在最后一条步骤上，
-    // 用户完全看不出发生了什么。
+    // 走到这里说明流没能把这场面试带到终态。**正常结束与报错都算降级**：
+    // 流被中间层静默掐断时页面会冻在最后一条步骤上，用户看不出发生了什么。
     const detail = streamError instanceof Error ? streamError.message : String(streamError ?? '进度流已结束')
     console.warn('面试进度流中断，降级为轮询:', detail)
     session.degraded = true
@@ -276,8 +255,8 @@ export function useInterview(backendUrl: { value: string }) {
   /**
    * 读流 + 断线重连，直到终态、用户停止、或重试次数用尽。
    *
-   * <p>为什么不是"断了就直接轮询"：轮询最快也要 5 秒一轮，而重连是即时的，
-   * 且后端连接时会补 snapshot，两者配合最省事也最不容易让用户看到"卡住"。
+   * <p>不是"断了就直接轮询"：轮询最快也要 5 秒一轮，而重连是即时的，
+   * 且后端连接时会补 snapshot，两者配合最不容易让用户看到"卡住"。
    */
   const runStreamWithReconnect = async (session: InterviewSession) => {
     let lastError: unknown = null
@@ -306,14 +285,10 @@ export function useInterview(backendUrl: { value: string }) {
   /**
    * 读 SSE 流，直到终态或流结束。
    *
-   * 后端发的是**规范 SSE**：`event: progress` + `data: {json}` + 空行，
-   * 心跳是注释行 `:ping`；与对话接口的 `{"type": ...}` 载荷不同，所以这里单独一套解析。
+   * 后端发的是**规范 SSE**：`event: progress` + `data: {json}` + 空行，心跳是注释行 `:ping`；
+   * 与对话接口的 `{"type": ...}` 载荷不同，所以这里单独一套解析。
    *
-   * <p><b>不要再"容忍"非规范帧</b>：2026-10 修过一个问题 —— 后端曾经自己拼好帧文本再发，
-   * 被 Spring MVC 二次包成 `data:event: progress`，这里 `JSON.parse` 直接失败、
-   * 所有事件被静默丢弃。修复方向是让后端输出结构化事件（见 `InterviewProgressHub`），
-   * 并加了 `InterviewProgressStreamIT` 断言线上字节；前端只要按规范解析即可，
-   * 遇到解析不了的内容只记一条 warn，不要试图猜格式。
+   * <p>只按规范解析：遇到解析不了的内容记一条 warn 即可，不要试图猜格式。
    */
   const runStream = async (session: InterviewSession) => {
     const id = session.interviewId
@@ -321,7 +296,7 @@ export function useInterview(backendUrl: { value: string }) {
       return
     }
     const controller = abortController
-    const { reader } = await streamInterview(backendUrl.value, id, controller?.signal)
+    const { reader } = await streamInterview(id, controller?.signal)
 
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
@@ -452,7 +427,7 @@ export function useInterview(backendUrl: { value: string }) {
   /** 把后端事件映射成界面状态 */
   const applyEvent = (session: InterviewSession, eventName: string, payload: Record<string, unknown>) => {
     if (eventName === 'snapshot') {
-      // 重连 / 刷新后的当前态：字段与 status 接口对齐，因此不必再补一次状态查询
+      // 重连 / 刷新后的当前态：字段与 status 接口对齐
       applyStatusFields(session, {
         status: str(payload.status),
         text: str(payload.text),
@@ -486,7 +461,7 @@ export function useInterview(backendUrl: { value: string }) {
       session.status = str(payload.status) || INTERVIEW_STATUS.READY
       session.reportUrl = str(payload.reportUrl)
       session.downloadUrl =
-        str(payload.downloadUrl) || getInterviewDownloadUrl(backendUrl.value, session.interviewId || '')
+        str(payload.downloadUrl) || getInterviewDownloadUrl(session.interviewId || '')
       const report = payload.report as InterviewReport | undefined
       if (report) {
         session.report = report
@@ -505,6 +480,7 @@ export function useInterview(backendUrl: { value: string }) {
 
   // ==================== 兜底轮询 ====================
 
+  /** 轮询直到终态（SSE 断流且重连失败时接管） */
   const startPolling = async (session: InterviewSession) => {
     if (!session.interviewId) {
       return
@@ -515,7 +491,7 @@ export function useInterview(backendUrl: { value: string }) {
         return
       }
       try {
-        const status = await getInterviewStatus(backendUrl.value, session.interviewId)
+        const status = await getInterviewStatus(session.interviewId)
         applyStatus(session, status)
         if (TERMINAL_STATUSES.includes(status.status)) {
           // 已经就绪：直接把报告正文拉回来，别再让用户点一次"载入报告内容"
@@ -559,8 +535,6 @@ export function useInterview(backendUrl: { value: string }) {
     })
   }
 
-  // ==================== 报告恢复 ====================
-
   /**
    * 从后端把报告拉回来（流断过、或刷新页面后重新进入时用）。
    *
@@ -572,10 +546,10 @@ export function useInterview(backendUrl: { value: string }) {
       return false
     }
     try {
-      const report = await getInterviewReport(backendUrl.value, id)
+      const report = await getInterviewReport(id)
       session.report = report
       session.reportUrl = session.reportUrl || ''
-      session.downloadUrl = getInterviewDownloadUrl(backendUrl.value, id)
+      session.downloadUrl = getInterviewDownloadUrl(id)
       session.qaCount = report.qaList?.length ?? 0
       session.status = INTERVIEW_STATUS.READY
       pushStep(session, 'ready', '报告已生成', true)
@@ -587,13 +561,10 @@ export function useInterview(backendUrl: { value: string }) {
     }
   }
 
-  /**
-   * 静默恢复：查一次状态，已就绪就把报告拉回来。
-   * 用于"页面刷新后重新进入同一场面试"，失败不打扰用户。
-   */
+  /** 静默恢复：查一次状态，已就绪就把报告拉回来。用于刷新后重新进入同一场面试，失败不打扰用户。 */
   const tryRestore = async (interviewId: string, session: InterviewSession): Promise<boolean> => {
     try {
-      const status = await getInterviewStatus(backendUrl.value, interviewId)
+      const status = await getInterviewStatus(interviewId)
       session.interviewId = interviewId
       applyStatus(session, status)
       if (status.reportReady || status.status === INTERVIEW_STATUS.READY) {
@@ -606,8 +577,6 @@ export function useInterview(backendUrl: { value: string }) {
       return false
     }
   }
-
-  // ==================== 本地续跑标记 ====================
 
   const STORAGE_KEY = 'dobao.interview.current'
 
@@ -643,7 +612,7 @@ export function useInterview(backendUrl: { value: string }) {
    */
   const loadReportById = async (interviewId: string): Promise<InterviewReport | null> => {
     try {
-      return await getInterviewReport(backendUrl.value, interviewId)
+      return await getInterviewReport(interviewId)
     } catch (error) {
       console.warn('按 interviewId 取报告失败:', error)
       return null
@@ -692,8 +661,6 @@ const num = (value: unknown): number | undefined => (typeof value === 'number' ?
 
 const bool = (value: unknown): boolean => value === true
 
-// ==================== 报告 → Markdown ====================
-
 /** 毫秒 → mm:ss（与后端 InterviewReportRenderer.formatTimestamp 同口径） */
 export const formatTimestamp = (ms: number): string => {
   if (!ms || ms <= 0) {
@@ -721,22 +688,14 @@ export const formatAudioDuration = (ms: number): string => {
 const oneLine = (text: string | null | undefined): string =>
   text == null || String(text).trim() === '' ? '-' : String(text).replace(/\s+/g, ' ').trim()
 
-/** 旧版报告（重构前生成）缺少参考回答/总结时的统一提示，与后端 InterviewReportRenderer 同文案 */
+/** 旧版本生成的报告缺少参考回答/总结时的统一提示，与后端 InterviewReportRenderer 同文案 */
 const LEGACY_REPORT_HINT = '本场报告生成于旧版本，未包含本节内容；重新生成后即可看到。'
 
 /**
- * 结构化报告 → Markdown。
+ * 结构化报告 → Markdown，固定三节：**问答清单 / 参考回答 / 面试总结**。
  *
- * <p>2026-10 重构后报告固定三节：**问答清单 / 参考回答 / 面试总结**。
- * 原「知识点清单」「待补充知识点」合并进总结，「完整对话」附录整体删除
- * （逐句原文仍在后端的 `transcript_json`，报告不再重复携带）。
- *
- * <p>问答清单仍<b>恢复展示时间戳</b>：Q 与 A 都是后端 `QaListBuilder` 从转写句子
- * 直接格式化出来的逐字原文，毫秒值也直接取自真实句子，因此是可信的定位信息 ——
- * 与后端 `InterviewReportRenderer` 保持同一口径。
- *
- * <p>旧版报告（`referenceAnswers` / `summary` 为 null）给出"重新生成"提示，
- * 与后端渲染器的文案一致，避免同一份报告在页面与下载文件里长得不一样。
+ * <p>时间戳来自后端 `QaListBuilder` 格式化出的真实句子，是可信的定位信息；
+ * 文案与后端 `InterviewReportRenderer` 保持同一口径，避免同一份报告在页面与下载文件里不一样。
  */
 export const reportToMarkdown = (report: InterviewReport): string => {
   const lines: string[] = ['# 面试总结报告', '']

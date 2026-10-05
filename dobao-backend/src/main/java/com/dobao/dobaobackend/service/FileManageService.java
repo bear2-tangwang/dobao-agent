@@ -77,7 +77,6 @@ public class FileManageService {
             OpenAiChatOptions options = OpenAiChatOptions.builder()
                     .temperature(0.2d)
                     .model("qwen3-vl-plus")
-//                    .model("qwen-mt-image-2.0")
                     .build();
             multimodalChatModel = OpenAiChatModel.builder()
                     .openAiApi(OpenAiApi.builder()
@@ -106,8 +105,8 @@ public class FileManageService {
     /**
      * 上传文件（指定归属用户）
      *
-     * <p>归属用户走"显式参数"而不是只读 {@code UserContext}：面试上传链路里
-     * 本方法也可能在非请求线程被调用，ThreadLocal 那时是 null。
+     * <p>归属用户走显式参数而不是只读 {@code UserContext}：面试上传链路里本方法也可能在
+     * 非请求线程被调用，ThreadLocal 那时是 null。
      *
      * @param userId 归属用户；为空时退化为兜底用户
      */
@@ -122,7 +121,6 @@ public class FileManageService {
                 fileId, file.getOriginalFilename(), fileType, fileSize, owner);
 
         try {
-            // 创建文件信息
             FileInfo fileInfo = FileInfo.builder()
                     .userId(owner)
                     .fileId(fileId)
@@ -133,29 +131,24 @@ public class FileManageService {
                     .status(FileInfo.FileStatus.PROCESSING)
                     .build();
 
-            // 先保存到数据库（初始状态为PROCESSING）
+            // 先落库为 PROCESSING，MinIO 上传成功后再回写路径与状态
             fileInfoService.saveFileInfo(fileInfo);
 
-            // 上传到 MinIO
             String objectName = generateObjectName(fileId, fileType);
             String minioPath = minioService.uploadFile(file, objectName);
             log.info("MinIO 上传完成: fileId={}", fileId);
 
-            // 更新MinIO路径
             fileInfo.setMinioPath(minioPath);
             fileInfo.setStatus(FileInfo.FileStatus.SUCCESS);
-            fileInfoService.updateFileInfo(fileInfo); //更新文件消息
+            fileInfoService.updateFileInfo(fileInfo);
 
-            // 根据文件类型进行不同的处理 TODO 存在多次IO存库的问题，后续优化
             if (isTextFile(fileType)) {
-                // 文本文件：调用FileParserService解析
                 try {
                     String extractedText = fileParserService.parseFile(file);
                     fileInfo.setExtractedText(extractedText);
                     fileInfoService.updateFileInfo(fileInfo);
                     log.info("文件解析完成: fileId={}, 文本长度: {}", fileId, extractedText.length());
 
-                    // 判断是否为大文件，如果是则进行向量化
                     if (isLargeFile(extractedText)) {
                         log.info("检测到大文件，开始向量化处理: fileId={}, 文本长度: {}", fileId, extractedText.length());
                         try {
@@ -175,9 +168,8 @@ public class FileManageService {
                     throw new RuntimeException("文件解析失败: " + e.getMessage(), e);
                 }
             } else if (isImageFile(fileType)) {
-                // 图片文件：调用多模态AI识别图片内容
                 try {
-                    String extractedText = image2Text(file); // 图转文
+                    String extractedText = image2Text(file);
                     fileInfo.setExtractedText(extractedText);
                     fileInfoService.updateFileInfo(fileInfo);
                     log.info("图片识别完成: fileId={}, 识别文本长度: {}", fileId, extractedText.length());
@@ -188,11 +180,10 @@ public class FileManageService {
                     throw new RuntimeException("图片识别失败: " + e.getMessage(), e);
                 }
             } else if (isAudioFile(fileType)) {
-                // 音频文件（面试录音）：只落 MinIO + 建记录，不解析文本，转写交给 InterviewService 异步处理。
-                // 关键：这里绝不做耗时动作，否则上传接口无法在 3 秒内返回。
+                // 音频文件（面试录音）：这里绝不做耗时动作，只落 MinIO + 建记录，
+                // 转写交给 InterviewService 异步处理，否则上传接口无法及时返回。
                 log.info("音频文件上传完成，等待转写: fileId={}, 类型: {}", fileId, fileType);
             } else {
-                // 其他文件类型：标记为成功，不进行额外处理
                 log.info("其他类型文件上传完成: fileId={}, 类型: {}", fileId, fileType);
             }
 
@@ -202,7 +193,6 @@ public class FileManageService {
         } catch (Exception e) {
             log.error("文件上传失败: fileId={}", fileId, e);
 
-            // 更新数据库中的状态为失败
             FileInfo fileInfo = fileInfoService.getFileInfoById(fileId);
             if (fileInfo != null) {
                 fileInfo.setStatus(FileInfo.FileStatus.FAILED);
@@ -227,7 +217,6 @@ public class FileManageService {
                 throw new RuntimeException("图片文件内容为空");
             }
 
-            // 使用多模态模型识别图片
             ByteArrayResource imageResource = new ByteArrayResource(imageBytes);
             var userMessage = UserMessage.builder()
                     .text("请描述这张图片的内容，包括场景、对象、布局、颜色、文字信息，直接输出纯文本描述，不要多余说明。")
@@ -259,15 +248,14 @@ public class FileManageService {
     /**
      * 按「文件ID + 归属用户」取文件信息。
      *
-     * <p>控制器必须用这个重载：fileId 是全局唯一索引，只按它查等于
-     * "拿到别人的 fileId 就能读内容/删文件"。
+     * <p>控制器必须用这个重载：fileId 是全局唯一索引，只按它查等于"拿到别人的 fileId 就能读内容/删文件"。
      *
      * @param userId 归属用户；为空时不做归属过滤（供内部/后台调用）
      */
     public FileInfo getFileInfo(String fileId, String userId) {
         FileInfo fileInfo = fileInfoService.getFileInfoById(fileId, userId);
         if (fileInfo == null) {
-            // 归属不符时也报"不存在"：不回 403 是为了不泄露"这个 fileId 真实存在"
+            // 归属不符时也报"不存在"，不回 403，以免泄露这个 fileId 真实存在
             throw new IllegalArgumentException("文件不存在: " + fileId);
         }
         return fileInfo;
@@ -352,13 +340,11 @@ public class FileManageService {
         FileInfo fileInfo = getFileInfo(fileId, userId);
 
         try {
-            // 从 MinIO 删除
             if (fileInfo.getMinioPath() != null) {
                 String objectName = extractObjectName(fileInfo.getMinioPath());
                 minioService.deleteFile(objectName);
             }
 
-            // 从数据库删除
             fileInfoService.deleteFileInfo(fileId, userId);
 
             log.info("文件删除成功: fileId={}, userId={}", fileId, userId);
@@ -409,7 +395,6 @@ public class FileManageService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void clearAll() {
-        // 获取所有文件ID，然后逐个删除
         List<FileInfo> allFiles = fileInfoService.getAllFiles();
         for (FileInfo fileInfo : allFiles) {
             try {
@@ -466,9 +451,7 @@ public class FileManageService {
     /**
      * 判断是否为音频文件（面试录音）。
      *
-     * <p>复用 {@link FileInfo#isAudioType(String)}，保证"支持哪些音频格式"只有一处定义。
-     * 注意：这个方法必须与 {@link FileInfo#isAudio()} 一起存在，只加实体侧的方法是没用的——
-     * 上面的类型分支用的是本类的私有方法。
+     * <p>格式清单复用 {@link FileInfo#isAudioType(String)}，保证只有一处定义。
      */
     private boolean isAudioFile(String fileType) {
         return FileInfo.isAudioType(fileType);
@@ -506,23 +489,20 @@ public class FileManageService {
     private void processLargeFileEmbedding(String fileId, String text) {
         log.info("开始处理大文件向量化: fileId={}, 文本长度: {}", fileId, text.length());
 
-        // 1. 创建文档
         Document document = new Document(text);
         List<Document> documents = List.of(document);
 
-        // 2. 切分文档（使用500字符，50重叠）
         OverlapParagraphTextSplitter splitter = new OverlapParagraphTextSplitter(500, 50);
         List<Document> chunks = splitter.apply(documents);
         log.info("文档切分完成: fileId={}, 切分数量: {}", fileId, chunks.size());
 
-        // 3. 为每个切分添加元数据
+        // 元数据 fileid 是 RAG 检索时的过滤键，改名会让已入库的向量检索不到
         for (int i = 0; i < chunks.size(); i++) {
             Document chunk = chunks.get(i);
             chunk.getMetadata().put("fileid", fileId);
             chunk.getMetadata().put("chunkId", i);
         }
 
-        // 4. 向量化并存储
         embeddingService.embedAndStore(chunks);
         log.info("大文件向量化存储完成: fileId={}, 切分数量: {}", fileId, chunks.size());
     }

@@ -106,7 +106,7 @@ const onPickFile = () => {
         <div v-else class="text-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
 
         <!-- 加载提示：渐变流光文字 -->
-        <div v-if="isSending && isLast && !msg.interview" class="thinking-loading">探索中莫着急~</div>
+        <div v-if="isSending && isLast && !msg.interview" class="thinking-loading">探索中莫着急...</div>
 
         <!-- 参考来源：纯文本折叠行，默认不展开 -->
         <div v-if="msg.reference && msg.reference.length > 0" class="reference-section">

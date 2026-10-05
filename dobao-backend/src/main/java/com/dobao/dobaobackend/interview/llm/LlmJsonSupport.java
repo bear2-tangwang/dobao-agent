@@ -19,22 +19,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * "要 LLM 回 JSON"的统一调用封装。
+ * "要 LLM 回 JSON"的统一调用封装：系统提示 + 用户内容 + JSON schema → 结构化对象。
+ * 集中在这里的好处是不会出现"有的地方判了截断、有的地方没判"。
  *
- * <p>步骤 3/4 现在只剩 2 类调用（角色判定、报告归纳），形态完全一样：
- * 系统提示 + 用户内容 + JSON schema → 结构化对象。集中在这里的好处是不会出现
- * "有的地方判了截断、有的地方没判"。
- *
- * <p><b>核心是截断检测（方案 1）</b>：先看 {@code finishReason}，为 {@code length} 说明输出被
- * {@code maxTokens} 打满、JSON 必然是半截的，此时直接抛
- * {@link LlmOutputTruncatedException}，而不是把半截文本丢给 Jackson 换一个
- * 毫无信息量的 {@code JsonParseException}。原分块抽取链路里这是最可能发生的失败模式
- * （一块要一次吐出多个问答对），2026-10 重构后风险主要落在报告归纳上。
+ * <p>核心是截断检测：先看 {@code finishReason}，为 {@code length} 说明输出被 {@code maxTokens}
+ * 打满、JSON 必然是半截的，此时直接抛 {@link LlmOutputTruncatedException}，
+ * 而不是把半截文本丢给 Jackson 换一个毫无信息量的 {@code JsonParseException}。
  *
  * <p>think 标签不需要在这里处理：{@code BeanOutputConverter} 默认挂的
- * {@code ResponseTextCleaner} 链（Whitespace → ThinkingTag → MarkdownCodeBlock → Whitespace）
- * 已经会剥掉 {@code <think>}/{@code  thinking}/{@code <reasoning>} 与 ``` 围栏
- * —— 这是读 Spring AI 1.1 字节码确认的，不是猜的。
+ * {@code ResponseTextCleaner} 链已经会剥掉 {@code <think>}/{@code  thinking}/{@code <reasoning>}
+ * 与 ``` 围栏。
  */
 @Slf4j
 @Component
@@ -58,8 +52,8 @@ public class LlmJsonSupport {
     /**
      * 固定随机种子（配合低温进一步保证"同一输入同一输出"）。
      *
-     * <p>需求 AC-13 要求"同一 interviewId 连续重跑 ≥3 次结果一致"。
-     * 温度只是把概率压小，`seed` 才能让采样路径真正可复现 —— 两者一起用。
+     * <p>同一 interviewId 连续重跑需要结果一致。温度只是把概率压小，
+     * {@code seed} 才能让采样路径真正可复现 —— 两者要一起用。
      */
     public static final int EXTRACTION_SEED = 42;
 

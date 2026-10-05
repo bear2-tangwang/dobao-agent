@@ -28,26 +28,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 报告生成（Reduce 阶段）。
+ * 报告生成：把整份问答清单交给模型做<b>一次</b>调用，产出参考回答与面试总结。
  *
- * <p><b>问答清单不过模型</b>：它直接取 {@link QaListBuilder} 的格式化产物，
- * 保证报告里的问答与时间戳与文字稿逐字一致，不会被二次改写。
+ * <p>问答清单直接取 {@link QaListBuilder} 的格式化产物（逐字原文），不让模型改写；
+ * 模型输出只做两层清洗：参考回答的编号落地校验、总结的去重与限长。
  *
- * <p><b>全流程只在这里调一次 LLM</b>（角色判定那次除外）：把整份问答清单交给模型，
- * 产出「技术问题的参考回答 + 面试总结（涉及知识点 / 待补充知识点 / 约 100 字总结）」。
- *
- * <p><b>2026-10 重构</b>：原实现产出「知识点清单 + 待补充知识点」并做<b>词面校验</b>
- * （{@code topic}/{@code point} 必须整串命中原文，或 2-gram 覆盖率 ≥ 60%），
- * 那套校验随两个字段一起删除；参考回答的内容本就是"应该怎么答"，不可能出现在候选人原话里，
- * 用"是否出现在原文"判定只会把正确结果全部误删。
- *
- * <p><b>现在的防编造只有一层，但落在真正有效的地方 —— 编号落地校验</b>：
- * {@code referenceAnswers[].qaId} 必须指向真实存在的问答条目，否则整条剔除并记日志；
- * 字段为空、编号重复的条目同样剔除。这样"模型凭空造一条没有出处的问答"会被拦下，
- * 而"模型把问题表述得更清楚"不会被误伤。
- *
- * <p>面试总结（{@link ReportSummary}）<b>不做词面校验</b>：它是抽象表述，
- * 允许出现原文里没有的词（如"建议补充分布式事务"）。
+ * <p>参考回答只校验 {@code qaId} 是否有出处：它答的是"应该怎么答"，本就不该出现在候选人原话里，
+ * 用词面匹配判定只会把正确结果全部误删。
  */
 @Slf4j
 @Component
@@ -78,18 +65,16 @@ public class InterviewReportGenerator {
 
         ReportDraft draft;
         if (qaList.isEmpty()) {
-            // 没有问答条目时不调用模型：既省一次调用，也避免模型"为了凑内容"凭空编参考回答
+            // 没有问答条目时不调模型：既省一次调用，也避免模型"为了凑内容"凭空编参考回答
             log.warn("问答清单为空，跳过参考回答与总结生成: interviewId={}", record.getInterviewId());
             draft = new ReportDraft(List.of(), null);
         } else {
-            // 序列化失败说明问答清单里有无法映射的字段，属于编码问题，直接抛出而不是让模型收到半截输入
             String qaJson;
             try {
                 qaJson = objectMapper.writeValueAsString(qaList);
             } catch (JsonProcessingException e) {
                 throw new IllegalStateException("序列化问答清单失败: " + e.getMessage(), e);
             }
-            // 调用模型生成报告
             draft = llmJsonSupport.callForJson(
                     InterviewPrompts.REPORT_SYSTEM,
                     InterviewPrompts.reportUser(qaJson),
@@ -98,14 +83,13 @@ public class InterviewReportGenerator {
                     buildReportOptions());
         }
 
-        // 编号落地校验：只有真实存在的问答条目才能被参考回答引用
+        // 只有真实存在的问答条目才能被参考回答引用
         Map<String, QaItem> byQaId = new LinkedHashMap<>();
         for (QaItem item : qaList) {
             if (item != null && StringUtils.hasText(item.qaId())) {
                 byQaId.putIfAbsent(item.qaId(), item);
             }
         }
-        // 校验参考回答：确保每个参考回答都指向一个真实存在的问答条目
         List<ReferenceAnswer> referenceAnswers =
                 validateReferenceAnswers(draft.safeReferenceAnswers(), byQaId);
         ReportSummary summary = normalizeSummary(draft.safeSummary());
@@ -126,13 +110,12 @@ public class InterviewReportGenerator {
     }
 
     /**
-     * 组装报告归纳这一次调用的按次选项。
+     * 组装这次调用的按次选项。
      *
-     * <p>这次调用既做抽取（挑出技术问题）也做写作（写参考回答与总结），
-     * 但仍沿用抽取档的低温 + 固定种子：报告要求"同一份问答清单跑出同一份报告"（需求 AC-13）。
-     * 温度与种子本身写死在
+     * <p>这次调用既做抽取也做写作，但沿用抽取档的低温 + 固定种子，
+     * 这样同一份问答清单能跑出同一份报告。温度与种子写死在
      * {@link LlmJsonSupport#EXTRACTION_TEMPERATURE} / {@link LlmJsonSupport#EXTRACTION_SEED}，
-     * 这里只负责把 {@code interview.report.*} 里可配的部分（换模型、关思考）带进来。
+     * 这里只带上 {@code interview.report.*} 里可配的部分（换模型、关思考）。
      */
     private ChatOptions buildReportOptions() {
         InterviewProperties.Report report = properties.getReport();
@@ -150,11 +133,10 @@ public class InterviewReportGenerator {
     }
 
     /**
-     * 参考回答校验：剔除没有出处的条目、空条目与重复编号。
+     * 参考回答校验：只保留有出处的条目，剔除空条目与重复编号。
      *
-     * <p>这是重构后唯一保留的防编造手段，判定标准只有一条：**这条参考回答是不是真出自本场问答**。
-     * 问题措辞允许与面试官原话不同（模型本来就被要求把原话收敛成清晰的问题），
-     * 因此这里只校验编号，不校验词面。
+     * <p>问题措辞允许与面试官原话不同（模型本就被要求把原话收敛成清晰的问题），
+     * 因此只校验编号，不校验词面。
      */
     private List<ReferenceAnswer> validateReferenceAnswers(List<ReferenceAnswer> candidates,
                                                            Map<String, QaItem> byQaId) {
@@ -173,8 +155,8 @@ public class InterviewReportGenerator {
                 log.warn("剔除问题或参考答案为空的条目: qaId={}", qaId);
                 continue;
             }
-            // 去重放在字段校验之后：空条目不该"占掉"这个编号，否则模型先给一条空的、
-            // 后面那条正常的同一编号会被当成重复丢掉（实测踩过）
+            // 去重必须在字段校验之后：否则一条空条目会"占掉"这个编号，
+            // 后面同编号的正常条目反而被当成重复丢掉
             if (!seen.add(qaId)) {
                 log.warn("剔除重复编号的参考回答: qaId={}", qaId);
                 continue;
@@ -185,10 +167,10 @@ public class InterviewReportGenerator {
     }
 
     /**
-     * 面试总结清洗：去空白、去重、去掉超出上限的内容。
+     * 面试总结清洗：去空白、去重、截断超限内容。
      *
-     * <p>上限只是兜底 —— prompt 已经要求 4~8 个知识点与约 100 字总结，
-     * 但"总结不要过多"是硬要求，不能完全指望模型每次都听话。
+     * <p>上限只是兜底 —— prompt 已要求 4~8 个知识点与约 100 字总结，
+     * 但"总结不要过多"是硬要求，不能指望模型每次都听话。
      */
     private ReportSummary normalizeSummary(ReportSummary raw) {
         List<String> covered = normalizeTopics(raw.safeCoveredTopics(), MAX_COVERED_TOPICS, "涉及知识点");

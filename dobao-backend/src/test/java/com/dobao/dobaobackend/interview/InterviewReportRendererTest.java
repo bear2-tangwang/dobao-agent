@@ -15,10 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 渲染契约测试：报告必须是「问答清单 / 参考回答 / 面试总结」三节，且**不再有完整对话**。
+ * 渲染契约：报告固定为「问答清单 / 参考回答 / 面试总结」三节。
  *
- * <p>这些断言锁的是"结构"而不是"措辞"：措辞可以调，但少一节、多一节、
- * 或者把已删除的「完整对话」加回来，都必须让测试变红。
+ * <p>断言锁的是结构而不是措辞：措辞可以调，但增删任何一节都必须让测试变红。
  */
 class InterviewReportRendererTest {
 
@@ -36,7 +35,7 @@ class InterviewReportRendererTest {
     }
 
     @Test
-    @DisplayName("三节标题齐全，且不再渲染「完整对话」")
+    @DisplayName("三节标题齐全，且不含「完整对话」")
     void rendersThreeSectionsAndNoTranscript() {
         String md = renderer.render(report(
                 List.of(qa("Q001", "自我介绍一下", "我做过三年后端")),
@@ -46,7 +45,7 @@ class InterviewReportRendererTest {
         assertTrue(md.contains("## 一、问答清单"), md);
         assertTrue(md.contains("## 二、参考回答"), md);
         assertTrue(md.contains("## 三、面试总结"), md);
-        assertFalse(md.contains("完整对话"), "完整对话已经不属于报告结构：" + md);
+        assertFalse(md.contains("完整对话"), "报告结构里不应出现完整对话：" + md);
     }
 
     @Test
@@ -99,7 +98,7 @@ class InterviewReportRendererTest {
     }
 
     @Test
-    @DisplayName("旧结构报告（新字段为 null）提示重新生成，而不是渲染成空白")
+    @DisplayName("历史报告（参考回答/总结为 null）提示重新生成，而不是渲染成空白")
     void rendersLegacyReportHint() {
         String md = renderer.render(report(List.of(qa("Q001", "问题", "回答")), null, null));
 

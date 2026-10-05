@@ -15,15 +15,7 @@ public class DobaoBackendApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(DobaoBackendApplication.class, args);
-        System.out.println("豆包智能体后端启动成功");
-        String robotHead = """
-      .-------.
-     /  O   O  \\
-    |     ^     |
-    |    ___    |
-     \\_________/
-    """;
-        System.out.println(robotHead);
+        System.out.println("dobao-agent backend started successfully");
 
     }
 

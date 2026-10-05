@@ -11,8 +11,7 @@ import org.springframework.stereotype.Component;
 import javax.sql.DataSource;
 
 /**
- * PgVector 向量库工厂
- * 按表名动态创建/加载向量库实例，供不同业务表隔离存储向量数据
+ * PgVector 向量库工厂：按表名动态创建或加载向量库实例，供不同业务表隔离存储向量数据。
  */
 @Component
 @Slf4j
@@ -33,7 +32,6 @@ public class DynamicPgVectorStoreFactory {
      * @param tableName 向量表名
      */
     public PgVectorStore createPgVectorStore(String tableName) {
-        // 参数校验
         if (tableName == null || tableName.trim().isEmpty()) {
             throw new IllegalArgumentException("向量表名称不能为空！");
         }

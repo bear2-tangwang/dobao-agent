@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -40,10 +41,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 会话读取路径：面试会话要把它那行的 fileid 解读成 interviewId 交给前端。
- *
- * <p>面试行的 {@code fileid} 是 interviewId（沿用本表"按 agent_type 解释的业务指针"约定），
- * 所以它不能再去 {@code ai_file_info} 里查一遍；文件名直接用 {@code question}。
+ * 会话读取路径：面试行的 {@code fileid} 就是 interviewId（本表"按 agent_type 解释业务指针"的约定），
+ * 因此不能再去 {@code ai_file_info} 查一遍，文件名直接用 {@code question}。
  */
 class SessionControllerTest {
 
@@ -55,8 +54,7 @@ class SessionControllerTest {
 
     @BeforeAll
     static void initTableInfo() {
-        // 纯单测没有 Spring 上下文：不注册 AiSession 元数据，wrapper.getTargetSql() 会抛
-        // "can not find lambda cache for this entity [AiSession]"
+        // 纯单测没有 Spring 上下文：不注册元数据，wrapper.getTargetSql() 会抛 "can not find lambda cache"
         MybatisPlusTableInfo.ensure(AiSession.class);
     }
 
@@ -66,7 +64,7 @@ class SessionControllerTest {
         aiFileInfoMapper = mock(AiFileInfoMapper.class);
         aiPptInstMapper = mock(AiPptInstMapper.class);
         interviewService = mock(InterviewService.class);
-        // 数据隔离依赖它取兜底用户（未登录/单测无请求上下文时用它）
+        // 数据隔离依赖它取兜底用户（未登录/单测无请求上下文时用）
         GithubOAuthProperties authProperties = new GithubOAuthProperties();
         authProperties.setDefaultUserId("u-default");
         controller = new SessionController();
@@ -92,7 +90,7 @@ class SessionControllerTest {
     @Test
     @DisplayName("面试会话详情：interviewId=fileid、fileName=question，且不去查文件表")
     void getSession_interview_exposesInterviewId() {
-        // 注意：IService#list 有 list(Wrapper) / list(IPage) 两个重载，裸 any() 会编译不过
+        // IService#list 有 (Wrapper)/(IPage) 两个重载，裸 any() 编译不过
         when(sessionService.list(ArgumentMatchers.<Wrapper<AiSession>>any())).thenReturn(List.of(interviewRow()));
 
         BaseResult<SessionDetailVO> result = controller.getSession("conv-1");
@@ -103,7 +101,7 @@ class SessionControllerTest {
         assertEquals("iv-1", message.getInterviewId());
         assertEquals("interView.m4a", message.getFileName());
         assertEquals("iv-1", message.getFileid());
-        // 面试行的文件元信息全部为空：这条 fileid 是 interviewId，不是 ai_file_info.file_id
+        // 面试行的 fileid 是 interviewId 而非 ai_file_info.file_id，文件元信息全部为空
         assertNull(message.getFileType(), "面试行不该有文件类型（它不是 ai_file_info 的行）");
         assertNull(message.getFileSize(), "面试行不该有文件大小（它不是 ai_file_info 的行）");
         verifyNoInteractions(aiFileInfoMapper);
@@ -189,10 +187,9 @@ class SessionControllerTest {
     }
 
     @Test
-    @DisplayName("会话列表：去重与用户过滤都下推到子查询，total 用分页结果的总数")
+    @DisplayName("会话列表：去重与用户过滤都在同一条相关子查询里，total 用分页结果的总数")
     void getSessionList_dedupesInSqlAndKeepsPageTotal() {
-        // 一次面试上传就给同一会话新增一行，且按 update_time desc 排在前面：
-        // 先去重再分页会让会话变少、total 也跟着变小，所以去重必须发生在分页之前（下推到 SQL）
+        // 去重必须先于分页（下推到 SQL）：先去重再分页会让会话变少、total 跟着变小
         AiSession newest = interviewRow();
         newest.setUpdateTime(LocalDateTime.now());
         AiSession other = new AiSession();
@@ -213,40 +210,73 @@ class SessionControllerTest {
         assertEquals(2L, result.getData().getTotal().longValue(),
                 "total 必须来自分页结果，不能是内存去重后的 size");
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<Wrapper<AiSession>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
-        verify(sessionService).page(ArgumentMatchers.<Page<AiSession>>any(), wrapperCaptor.capture());
-        Wrapper<AiSession> wrapper = wrapperCaptor.getValue();
-        String outerSql = wrapper.getTargetSql();
+        Wrapper<AiSession> wrapper = captureListWrapper();
+        String sql = wrapper.getTargetSql().toLowerCase();
 
-        // MyBatis-Plus 的 `in(子查询)` 不会把子查询拼进外层 SQL：外层只有 `id IN (?)`，
-        // 子查询的**wrapper 对象本身**作为参数值传进来。所以要断言隔离是否正确，
-        // 必须把这个嵌套 wrapper 取出来看它自己的 SQL 与参数。
-        @SuppressWarnings("unchecked")
-        Map<String, Object> params =
-                ((AbstractWrapper<AiSession, ?, ?>) wrapper).getParamNameValuePairs();
-        Wrapper<?> subWrapper = params.values().stream()
-                .filter(Wrapper.class::isInstance)
-                .map(Wrapper.class::cast)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError(
-                        "没有找到子查询 wrapper 参数，实际参数表: " + params + "，外层 SQL: " + outerSql));
+        // 去重必须是真正的 SQL 子查询：`.in(id, subQueryWrapper)` 没有对应重载，会退化成
+        // `id IN (?)`（Wrapper 被当成绑定参数），MySQL 拿对象字符串比 bigint 静默返回 0 行。
+        // 下面两条断言是这条不变式唯一的护栏。
+        assertTrue(sql.contains("select max("),
+                "去重必须落成真正的相关子查询（id = (SELECT MAX(...))），实际 SQL: " + wrapper.getTargetSql());
+        assertFalse(sql.contains("in (?)"),
+                "不能出现 `id IN (?)`：那说明子查询被当成绑定参数了，实际 SQL: " + wrapper.getTargetSql());
 
-        String subSql = subWrapper.getTargetSql().toLowerCase();
-        // 子查询必须自己带用户条件：否则会拿所有用户的行一起取每组最大 id，
-        // 别人先写了同一个 session_id 时，自己那行会被淘汰、会话凭空消失。
-        assertTrue(subSql.contains("user_id"),
-                "用户过滤必须下推到子查询，实际子查询: " + subWrapper.getTargetSql());
-        assertTrue(subSql.contains("group by") && subSql.contains("session_id"),
-                "去重（按 session_id 分组取每组最大 id）必须在子查询里，实际子查询: "
-                        + subWrapper.getTargetSql());
+        // 用户条件必须在去重子查询内部：否则所有用户的行一起取每组最大 id，
+        // 别人先占用了同一个 session_id 时自己那行会被淘汰、会话凭空消失。
+        assertTrue(sql.contains("session_id"),
+                "去重必须按 session_id 归并，实际 SQL: " + wrapper.getTargetSql());
+        assertTrue(sql.contains("user_id"),
+                "用户过滤必须在去重子查询里，实际 SQL: " + wrapper.getTargetSql());
+        assertTrue(sql.contains("ai_session"),
+                "子查询要自己 FROM 一次会话表，实际 SQL: " + wrapper.getTargetSql());
 
-        // 子查询里绑定的用户名必须是当前用户
-        @SuppressWarnings("unchecked")
-        Map<String, Object> subParams =
-                ((AbstractWrapper<?, ?, ?>) subWrapper).getParamNameValuePairs();
-        assertTrue(subParams.containsValue("u-default"),
-                "子查询必须绑定当前用户ID，实际子查询参数: " + subParams);
+        Map<String, Object> params = paramNameValuePairs(wrapper);
+        assertTrue(params.containsValue("u-default"),
+                "子查询必须绑定当前用户ID，实际参数: " + params);
+        // 反向护栏：绑定参数里不允许出现 Wrapper（出现了就说明又写成 in(wrapper) 了）
+        assertFalse(params.values().stream().anyMatch(Wrapper.class::isInstance),
+                "子查询不能作为绑定值传进去（那正是 in(wrapper) 的错误写法），实际参数: " + params);
+    }
+
+    @Test
+    @DisplayName("会话列表：agentType 过滤与去重在同一子查询里，且 agentType 也是参数绑定")
+    void getSessionList_agentTypeFilterGoesIntoDedupeSubquery() {
+        Page<AiSession> page = new Page<>(1, 10);
+        page.setRecords(List.of());
+        page.setTotal(0L);
+        when(sessionService.page(ArgumentMatchers.<Page<AiSession>>any(), any())).thenReturn(page);
+
+        controller.getSessionList(1, 10, "chat");
+
+        Wrapper<AiSession> wrapper = captureListWrapper();
+        String sql = wrapper.getTargetSql().toLowerCase();
+
+        // agentType 过滤必须与去重同在一个子查询：先去重再过滤会把"先 chat 后面试"的
+        // 混排会话整体滤掉（最新一行是面试行时尤其明显）。
+        assertTrue(sql.contains("select max("),
+                "去重子查询不能因为加了 agentType 过滤就退化成别的写法，实际 SQL: " + wrapper.getTargetSql());
+        assertTrue(sql.contains("agent_type"),
+                "agentType 过滤要下推到去重子查询，实际 SQL: " + wrapper.getTargetSql());
+
+        Map<String, Object> params = paramNameValuePairs(wrapper);
+        assertTrue(params.containsValue("u-default") && params.containsValue("chat"),
+                "用户ID 与 agentType 都要绑定进子查询，实际参数: " + params);
+        assertFalse(params.values().stream().anyMatch(Wrapper.class::isInstance),
+                "子查询不能作为绑定值传进去，实际参数: " + params);
+    }
+
+    /** 取出 controller 传给 IService#page 的 wrapper */
+    @SuppressWarnings("unchecked")
+    private Wrapper<AiSession> captureListWrapper() {
+        ArgumentCaptor<Wrapper<AiSession>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(sessionService).page(ArgumentMatchers.<Page<AiSession>>any(), captor.capture());
+        return captor.getValue();
+    }
+
+    /** 取 wrapper 上绑定的具名参数表（MPGENVAL... -> 值） */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> paramNameValuePairs(Wrapper<AiSession> wrapper) {
+        return ((AbstractWrapper<AiSession, ?, ?>) wrapper).getParamNameValuePairs();
     }
 
     @Test
@@ -274,8 +304,8 @@ class SessionControllerTest {
         BaseResult<String> result = controller.deleteSession("conv-1");
 
         assertEquals(200, result.getCode());
-        // fileid 即 interviewId（见 InterviewSessionRecorder）：不传下去录音就永远留在 MinIO 里；
-        // 第二个参数是"正在被删除的会话"，供 InterviewService 判断这场面试是否还被别的会话引用
+        // fileid 即 interviewId：不传下去录音会永远留在 MinIO；第二个参数是"正在被删除的会话"，
+        // 供 InterviewService 判断这场面试是否还被别的会话引用
         verify(interviewService).deleteInterviews(List.of("iv-1"), "conv-1");
         verify(sessionService).remove(any());
     }
@@ -300,8 +330,8 @@ class SessionControllerTest {
         org.mockito.Mockito.doThrow(new IllegalStateException("删除面试文件失败: x.md"))
                 .when(interviewService).deleteInterviews(any(), any());
 
-        // 必须抛出：一旦被 try/catch 吞成 BaseResult.newError，事务拦截器就看不到异常，
-        // 结果是"MinIO 对象已删、DB 只删了一半"的半状态
+        // 必须抛出：吞成 BaseResult.newError 后事务拦截器看不到异常，
+        // 会留下"MinIO 对象已删、DB 只删了一半"的半状态
         assertThrows(IllegalStateException.class, () -> controller.deleteSession("conv-1"));
         verify(sessionService, never()).remove(any());
     }

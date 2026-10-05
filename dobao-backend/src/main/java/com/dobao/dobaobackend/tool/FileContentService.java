@@ -15,15 +15,13 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 
 /**
- * 文件内容服务工具
- * 合并了文件加载和RAG检索功能
- * 根据文件的 embed 字段自动选择合适的加载方式
+ * 文件内容服务工具：合并文件加载与 RAG 检索，按文件的 {@code embed} 字段自动选择加载方式。
  *
  * <p><b>归属校验</b>：本类由 Spring AI 在做工具调用时执行，跑在 Reactor 链内部，
- * 读不到请求线程的 {@code UserContext}(ThreadLocal)，又不能让 LLM 自己传用户身份
- * （那等于把授权交给模型）。因此身份从 <b>Reactor Context</b> 里取
+ * 读不到请求线程的 {@code UserContext}(ThreadLocal)，也不能让 LLM 自己传用户身份
+ * （那等于把授权交给模型），因此身份从 <b>Reactor Context</b> 里取
  * （AgentController 在返回 Flux 时写入，见 {@link UserContext#REQUEST_USER_KEY}）。
- * 取不到时退化为"不做归属过滤"，与改造前行为一致，不会把正常功能打挂。
+ * 取不到时退化为"不做归属过滤"。
  */
 @Service
 @Slf4j
@@ -62,18 +60,16 @@ public class FileContentService {
                 .block();
 
         try {
-            // 查询文件信息（带归属校验：fileId 是全局唯一的，只按它查等于"猜到 ID 就能读别人的文件"）
+            // fileId 是全局唯一的，只按它查等于"猜到 ID 就能读别人的文件"，所以带上归属用户
             var fileInfo = fileManageService.getFileInfo(fileId, userId);
             if (fileInfo == null) {
                 return "文件不存在，文件ID: " + fileId;
             }
 
-            // 检查文件处理状态
             if (fileInfo.getStatus() != FileInfo.FileStatus.SUCCESS) {
                 return String.format("文件处理中或处理失败，当前状态: %s，文件ID: %s", fileInfo.getStatus(), fileId);
             }
 
-            // 根据 embed 字段选择加载方式
             Integer embed = fileInfo.getEmbed();
             if (embed != null && embed == 1) {
                 // embed=1: 使用RAG语义检索
@@ -97,11 +93,9 @@ public class FileContentService {
      */
     private String retrieveWithRAG(String fileId, FileInfo fileInfo, String question) {
         if (question == null || question.trim().isEmpty()) {
-            // 如果没有提供问题，返回提示
             return buildResponse(fileId, fileInfo, "请提供具体问题以进行语义检索。", null);
         }
 
-        // 调用 EmbeddingService 进行 RAG 检索
         List<String> results = embeddingService.ragRetrieve(fileId, question);
 
         if (results == null || results.isEmpty()) {
@@ -115,7 +109,6 @@ public class FileContentService {
      * 直接加载完整文件内容
      */
     private String loadDirectly(String fileId, FileInfo fileInfo, String userId) {
-        // 获取文件内容（同样带归属校验）
         String content = fileManageService.getFileContent(fileId, userId);
         String contentText = (content != null && !content.trim().isEmpty()) ? content : "该文件没有可识别的内容";
 
@@ -146,10 +139,8 @@ public class FileContentService {
                 sb.append(segments.get(i)).append("\n\n");
             }
         } else if (content != null) {
-            // 直接加载内容格式
             sb.append(content);
         } else {
-            // 提示信息
             sb.append("无内容可显示");
         }
 

@@ -1,36 +1,18 @@
 package com.dobao.dobaobackend.prompts;
 
 /**
- * 面试总结功能的全部 prompt 模板。
- *
- * <p>集中在一个类里，与项目既有的 {@code BaseAgentPrompts} / {@code PptBuilderPrompts} /
- * {@code PlanExecutePrompts} 保持同一约定，便于统一调优与回归。
- *
- * <p><b>2026-10 重构后全流程只剩两个 prompt</b>：
- * <ol>
- *   <li>{@link #ROLE_RESOLUTION_SYSTEM}：一次性判定哪个说话人是面试官（采样片段，一次调用）；</li>
- *   <li>{@link #REPORT_SYSTEM}：由**已格式化好的问答清单**产出参考回答与面试总结（一次调用）。</li>
- * </ol>
- * 原来的"问答抽取"prompt（分块抽取问答对、输出句子序号、逐条 topics）已随分块链路一起删除：
- * 问答清单改为由转写句子列表直接格式化，不再经过模型。
- *
- * <p>所有 prompt 都强制"只输出 JSON"：项目用的是推理模型，可能输出 {@code <think>} 内容；
- * Spring AI 的 {@code BeanOutputConverter} 默认会剥掉 think 标签与 ``` 围栏，
- * 但**被 maxTokens 截断时不保证**（详见 {@code LlmJsonSupport}）。
+ * 面试总结功能的 prompt 模板：说话人角色判定与报告归纳，均要求模型只输出 JSON。
+ * 推理模型可能输出 think 标签或 ``` 围栏，BeanOutputConverter 通常能剥掉，被 maxTokens 截断时不保证。
  */
 public final class InterviewPrompts {
 
     private InterviewPrompts() {
     }
 
-    // ==================== 步骤 3-① 说话人角色判定 ====================
-
     /**
-     * 角色判定：一次调用决定"哪个说话人编号是面试官"，
-     * 结果被 {@code QaListBuilder} 用来把 {@code Speaker0/Speaker1} 一次性替换成"面试官/候选人"。
-     *
-     * <p>刻意不把"说话时长"作为依据 —— 面试官也可能长篇介绍团队与岗位
-     * （步骤 0 的录音里就是如此），只看时长会判错。
+     * 角色判定：一次调用决定哪个说话人编号是面试官，
+     * 结果由 {@code QaListBuilder} 用来把 {@code Speaker0/Speaker1} 替换成面试官/候选人。
+     * 刻意不以说话时长为依据：面试官也可能长篇介绍团队与岗位，只看时长会判错。
      */
     public static final String ROLE_RESOLUTION_SYSTEM = """
             你是面试记录分析助手，擅长从对话内容判断说话人的角色。
@@ -61,15 +43,8 @@ public final class InterviewPrompts {
 
 
     /**
-     * 报告归纳：<b>全流程唯一一次"读内容做总结"的调用</b>。
-     *
-     * <p>输入是已经格式化好的问答清单（每条含 qaId、面试官原话、候选人原话与时间戳），
-     * 不再是分块结果，也不需要模型再抽取问答 —— 它只产出报告的后两节：
-     * 技术问题的参考回答，以及约 100 字的面试总结。
-     *
-     * <p><b>2026-10 重构</b>：原 prompt 产出 {@code knowledgeTopics} / {@code knowledgeGaps}
-     * 两棵"知识点树"，篇幅大且与总结重复；现在收敛为
-     * {@code referenceAnswers}（参考回答）+ {@code summary}（三字段总结）。
+     * 报告归纳：输入已格式化好的问答清单，产出 referenceAnswers（技术问题参考答案）与
+     * summary（coveredTopics / gapTopics / summary 三项总结），模型不再做问答抽取。
      */
     public static final String REPORT_SYSTEM = """
             你是面试复盘报告撰写助手。输入是一场面试的问答清单（每条含编号 qaId、

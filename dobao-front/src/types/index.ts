@@ -74,14 +74,11 @@ export interface SessionDetail {
   messages: SessionMessage[]
 }
 
-// ==================== 面试总结（步骤 5） ====================
-
 /**
  * 一条问答（对应后端 QaItem）。
  *
- * 2026-10 重构：Q 与 A 都是**逐字原文**（由后端 QaListBuilder 直接格式化，未经模型改写），
- * 因此没有 answerSummary / answerQuotes / topics 三个字段了；
- * 时间戳直接来自转写句子，正文会展示出来。
+ * Q 与 A 都是**逐字原文**（由后端 QaListBuilder 直接格式化，未经模型改写），
+ * 时间戳来自真实转写句子，正文会展示出来。
  */
 export interface InterviewQaItem {
   qaId: string
@@ -119,9 +116,9 @@ export interface InterviewReport {
   generatedAt: string | null
   /** 一、问答清单：整场面试问答，Q/A 均为逐字原文 */
   qaList: InterviewQaItem[] | null
-  /** 二、参考回答：只含技术问题；旧版报告为 null */
+  /** 二、参考回答：只含技术问题；旧报告（无此节）为 null */
   referenceAnswers: InterviewReferenceAnswer[] | null
-  /** 三、面试总结；旧版报告为 null */
+  /** 三、面试总结；旧报告（无此节）为 null */
   summary: InterviewReportSummary | null
 }
 
@@ -184,8 +181,8 @@ export interface InterviewSession {
   /**
    * 是否正在上传录音。
    *
-   * <p>纯前端状态：上传接口返回之前还没有 `interviewId`，面板据此显示"提交中"，
-   * 而不是又露出一张上传卡（那张卡上的"重新选择/开始总结"会打断正在跑的场次）。
+   * <p>上传接口返回之前还没有 `interviewId`，面板据此显示"提交中"，
+   * 而不是又露出一张上传卡（那张卡上的按钮会打断正在跑的场次）。
    */
   uploading?: boolean
   /**

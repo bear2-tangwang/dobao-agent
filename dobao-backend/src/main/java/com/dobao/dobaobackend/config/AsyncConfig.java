@@ -12,26 +12,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 /**
  * 面试转写任务线程池配置。
  *
- * <p>设计要点（对应 docs/interview-step1-analysis.md §4.6 / §4.7）：
- *
- * <ol>
- *   <li><b>为什么必须用独立线程池</b>：音频转写是"取临时 URL → 提交任务 → 落库"
- *       这类秒级到分钟级的耗时动作，放在 Tomcat 线程里会把上传接口拖到 3 秒以上，
- *       违反 docs/interview-summary-coding-plan.md 步骤 2 的验收要求。</li>
- *
- *   <li><b>为什么轮询不放在这个池里</b>：百炼转写是异步任务，最长要等 30 分钟。
- *       如果把 {@code pollUntilDone} 这种阻塞轮询丢进本池，8 个线程会被占满 30 分钟，
- *       第 9 个任务只会在队列里静默排队（用户看到状态一直停在 UPLOADED，像是卡死），
- *       而且实例重启后排队任务全丢。因此采用"轮询与提交解耦"方案：
- *       本池只负责提交/落库等短任务，轮询由 {@code @Scheduled} 扫描
- *       {@code ai_interview} 中 {@code status=TRANSCRIBING} 的记录驱动，
- *       天然支持重启续跑，也顺带实现步骤 6 的"30 分钟超时兜底"。</li>
- *
- *   <li><b>拒绝策略</b>：队列满时用 {@link ThreadPoolExecutor.AbortPolicy} 快速失败。
- *       调用方（上传入口）必须捕获 {@code TaskRejectedException}，把记录置为 FAILED 并返回
- *       可读提示；否则异常会冒泡进上传事务导致回滚，用户只看到 500 却不知道原因。
- *       这里刻意不用 CallerRunsPolicy——那会让 Tomcat 线程去跑任务，等于白拆线程池。</li>
- * </ol>
+ * <p>提交动作必须离开 Tomcat 线程；最长 30 分钟的轮询不占用本池，由 {@code @Scheduled}
+ * 扫描 {@code ai_interview} 中 {@code status=TRANSCRIBING} 的记录驱动，以支持重启续跑。
  */
 @Slf4j
 @Configuration
@@ -46,13 +28,14 @@ public class AsyncConfig implements AsyncConfigurer {
         executor.setCorePoolSize(4);
         executor.setMaxPoolSize(8);
         executor.setQueueCapacity(50);
-        // 线程名前缀是步骤 1 验收"异步线程池生效"的观察点：日志里应为 interview-asr-1 这类名字
+        // 日志中的线程名形如 interview-asr-1，便于定位转写任务
         executor.setThreadNamePrefix("interview-asr-");
-        // 低峰期回收核心线程，避免空占内存
         executor.setAllowCoreThreadTimeOut(true);
-        // 关停时不等待在途任务——否则一次重启要挂 30 分钟
+        // 不等在途任务：单次转写可能挂 30 分钟，等待会让重启卡住
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.setAwaitTerminationSeconds(30);
+        // 队列满即失败：调用方负责捕获 TaskRejectedException 置 FAILED；
+        // 不能用 CallerRunsPolicy——那会让 Tomcat 线程替跑去执行任务
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         executor.initialize();
         log.info("面试转写线程池初始化完成: threadNamePrefix=interview-asr-, core={}, max={}, queue={}",
@@ -61,8 +44,8 @@ public class AsyncConfig implements AsyncConfigurer {
     }
 
     /**
-     * 返回 null 表示不覆盖 Spring 的默认异步执行器解析逻辑。
-     * 本类只借用 {@link AsyncConfigurer} 来注册全局的异步异常处理器。
+     * 返回 null 表示不覆盖 Spring 的默认异步执行器解析逻辑：
+     * 本类只借用 {@link AsyncConfigurer} 注册全局的异步异常处理器。
      */
     @Override
     public java.util.concurrent.Executor getAsyncExecutor() {
@@ -70,8 +53,7 @@ public class AsyncConfig implements AsyncConfigurer {
     }
 
     /**
-     * {@code @Async} 修饰 void 方法时异常不会传播给调用方，默认只打一条 WARN。
-     * 这里统一记录，避免转写失败被静默吞掉（步骤 2 需要可读的失败原因）。
+     * {@code @Async} 修饰 void 方法时异常不会传播给调用方（默认只打一条 WARN），这里统一记录。
      */
     @Override
     public AsyncUncaughtExceptionHandler getAsyncUncaughtExceptionHandler() {

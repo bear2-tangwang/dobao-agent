@@ -23,9 +23,9 @@ export const SUPPORTED_FILE_TYPES = {
 }
 
 /**
- * 面试录音支持的扩展名。
- * 与后端 `InterviewService.validate` + `FileInfo.isAudioType` 保持一致：
- * 后端才是真正的闸门，前端这层只是为了"不合法不发请求"。
+ * 面试录音支持的扩展名与大小上限。
+ * 两者必须与后端 `InterviewService.validate` / `FileInfo.isAudioType` /
+ * `interview.asr.max-audio-bytes` 对齐：后端才是真正的闸门，前端这层只是为了"不合法不发请求"。
  */
 export const AUDIO_EXTENSIONS = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'amr']
 

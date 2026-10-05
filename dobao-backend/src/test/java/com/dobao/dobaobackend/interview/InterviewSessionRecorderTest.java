@@ -32,14 +32,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 面试会话写入器的规则测试。
- *
- * <p>用 mock 顶替 {@link AiSessionService}：这里要证明的是"写什么、按什么条件写"，
- * 不是 MyBatis-Plus 的 SQL 能力（项目里没有测试库，见实施计划前置事实）。
- *
- * <p>摘要回填必须是<b>一条批量 UPDATE</b>（列级 set），而不是"查出来再逐行写回"：
- * 前者 1 条 SQL、原子；后者 1+2N 条且并发下丢更新。下面用 wrapper 的 SET/WHERE 片段
- * 与绑定参数把这一点钉住。
+ * 面试会话写入器的规则：写什么、按什么条件写（mock 顶替 {@link AiSessionService}，项目无测试库）。
+ * 摘要回填必须是一条批量 UPDATE（列级 set）而非"查出来再逐行写回"：后者 1+2N 条 SQL 且并发丢更新。
  */
 class InterviewSessionRecorderTest {
 
@@ -94,8 +88,8 @@ class InterviewSessionRecorderTest {
 
         recorder.recordUploaded("conv-1", "iv-1", "interView.m4a", "u-1");
 
-        // 插入成功之后必须补一条摘要：否则这场面试在报告生成之前 answer 一直是 NULL ——
-        // 而幂等命中已有记录时不会重跑状态机，那一行就再也没人回填
+        // 插入成功之后必须补一条摘要：幂等命中已有记录时不会重跑状态机，
+        // 不补的话这一行的 answer 会永远是 NULL
         assertEquals("面试总结进行中…", boundValue(captureUpdate(), "answer"));
         verify(sessionService).saveQuestion(any());
     }

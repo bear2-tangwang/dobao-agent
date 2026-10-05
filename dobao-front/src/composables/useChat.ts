@@ -1,6 +1,5 @@
 import { ref, reactive, computed, nextTick, onMounted } from 'vue'
 import hljs from 'highlight.js'
-import { backendUrl as DEFAULT_BACKEND_URL } from '@/config'
 import { AGENTS, SUPPORTED_FILE_TYPES, STREAM_TYPES, AUDIO_EXTENSIONS } from '@/utils/constants'
 import { generateId, formatFileSize } from '@/utils/format'
 import { renderMarkdown, processReferences, processRecommendations } from '@/utils/markdown'
@@ -18,7 +17,6 @@ import type { Agent, Chat, Message, StreamPayload, InterviewSession } from '@/ty
 
 export function useChat() {
   // ===== 配置和常量 =====
-  const backendUrl = ref(DEFAULT_BACKEND_URL)
   const connectionError = ref<string | null>(null)
   const agents = ref<Agent[]>(AGENTS)
 
@@ -33,8 +31,8 @@ export function useChat() {
   const isSending = ref(false)
   const currentRecommendMsgId = ref<string | null>(null)
 
-  // ===== 面试总结（步骤 5） =====
-  // 合规勾选：未勾选不允许提交（需求文档 §6 合规项）
+  // ===== 面试总结 =====
+  // 合规勾选：未勾选不允许提交
   const interviewAgreed = ref(false)
   // 面试模式下选中的录音（不立刻上传，等用户点"开始总结"或面板按钮）
   const interviewFile = ref<File | null>(null)
@@ -55,12 +53,12 @@ export function useChat() {
   /**
    * 面试进度对象**由每条消息各自持有**（`message.interview`），不再全应用共用一个。
    *
-   * <p>共用一份会踩坑：一个会话里做第二场面试时 `Object.assign` 会把第一场的报告就地清空，
-   * 第一场的气泡只剩一个空壳（用户看到的"上一场的 AI 气泡消失了，用户气泡还在"）。
-   * 每场一个对象之后，多场面试互不影响；`useInterview` 的每个方法都接收目标 session，
-   * 只就地改字段、从不换对象，所以流式进度照旧实时刷新。
+   * <p>共用一份会出问题：一个会话里做第二场面试时 `Object.assign` 会把第一场的报告
+   * 就地清空，第一场的气泡只剩一个空壳。每场一个对象之后，多场面试互不影响；
+   * `useInterview` 的每个方法都接收目标 session，只就地改字段、从不换对象，
+   * 所以流式进度照旧实时刷新。
    */
-  const interview = useInterview(backendUrl)
+  const interview = useInterview()
 
   // 确认对话框状态
   const showConfirmDialog = ref(false)
@@ -83,7 +81,7 @@ export function useChat() {
   // 用于中断流式请求的 AbortController
   let abortController: AbortController | null = null
 
-  // ===== 直接更新流式输出的 DOM(原 updateStreamContent) =====
+  // ===== 直接更新流式输出的 DOM =====
   const updateStreamContent = (content: string, isThinking = false) => {
     const target = isThinking ? currentThinkingContentDiv : currentStreamContentDiv
     if (target) {
@@ -129,7 +127,7 @@ export function useChat() {
 
   // ===== API 相关 =====
   const testConnection = async () => {
-    const result = await apiTestConnection(backendUrl.value)
+    const result = await apiTestConnection()
     if (result.success) {
       connectionError.value = null
     } else {
@@ -138,7 +136,7 @@ export function useChat() {
   }
 
   const loadChatsFromStorage = async () => {
-    chatList.value = await apiLoadChats(backendUrl.value)
+    chatList.value = await apiLoadChats()
   }
 
   const selectChat = async (chatId: string) => {
@@ -154,17 +152,16 @@ export function useChat() {
       return
     }
 
-    const sessionData = await apiGetChatDetail(backendUrl.value, chatId)
+    const sessionData = await apiGetChatDetail(chatId)
     if (sessionData) {
       const target = chatList.value.find(c => c.id === chatId)
       if (target) {
         target.agentType = sessionData.agentType
         target.fileid = sessionData.fileid
         target.messages = []
-        // 只用来决定"标题要不要按气泡文案覆盖"（见下方注释），
-        // 面试分支本身一律按**消息**判断（msg.interviewId）：会话级开关会漏判 ——
-        // SessionController.getSession 的 agentType 取的是第一行（按 create_time asc），
-        // "先在会话里聊一句、再在同一会话里跑面试"时它是 chat，面试那条消息就走不到面试分支。
+        // 只用来决定"标题要不要按气泡文案覆盖"（见下方注释）。面试分支一律按**消息**
+        // 判断（msg.interviewId）：会话级开关会漏判，因为 SessionController.getSession
+        // 的 agentType 取的是第一行（按 create_time asc），"先聊一句、再跑面试"的会话里它是 chat。
         const isInterviewSession = sessionData.agentType === 'interview'
 
         if (sessionData.messages && Array.isArray(sessionData.messages)) {
@@ -213,8 +210,7 @@ export function useChat() {
               continue
             }
 
-            // 其余消息（含面试会话里没有 interviewId 的历史脏数据）都走普通 assistant 分支，
-            // 渲染 answer/thinking，不再需要单独的退化分支
+            // 其余消息（含面试会话里没有 interviewId 的脏数据）都走普通 assistant 分支
             if (msg.answer || msg.thinking) {
               const reference = processReferences(msg.reference)
               target.messages.push({
@@ -235,9 +231,8 @@ export function useChat() {
 
           // 回放结束后，只给"最新一场仍在处理的面试"续订进度流：
           // 本 composable 的流与轮询都是单句柄（stop()/pollTimer 共享），
-          // 同一会话同时维持多条流会互相打断 —— 这与实时交互的既有约束一致。
-          // 这里不按会话类型收口：内部本来就按 m.interview 过滤，混排会话里的面试消息
-          // 同样需要续订（会话级开关会让它们永远停在回放时的那一次查询结果上）。
+          // 同时维持多条流会互相打断。这里按 m.interview 过滤而非会话类型
+          // —— 混排会话里的面试消息同样需要续订。
           const pending = target.messages.filter(
             m => m.interview && !isTerminalInterviewStatus(m.interview.status)
           )
@@ -247,10 +242,8 @@ export function useChat() {
           }
         }
 
-        // 面试会话的标题由列表接口给出（question=录音文件名），不要用气泡文案覆盖；
-        // 混排会话（首行是 chat、里面有面试消息）这里仍按普通会话处理，不去覆盖列表接口已经
-        // 给好的标题 —— 面试消息的用户气泡文案是固定的一句"请总结这段面试录音"，
-        // 拿它当标题会把用户原本的会话标题冲掉。
+        // 面试会话的标题由列表接口给出（question=录音文件名），不要用气泡文案覆盖：
+        // 面试消息的用户气泡文案是固定的"请总结这段面试录音"，拿它当标题会冲掉原会话标题。
         if (!isInterviewSession) {
           const firstUserMessage = target.messages.find(m => m.role === 'user')
           if (firstUserMessage && firstUserMessage.content) {
@@ -267,7 +260,7 @@ export function useChat() {
     confirmTitle.value = '确认删除'
     confirmMessage.value = '删除该会话后将无法恢复，是否继续？'
     confirmCallback = async () => {
-      const result = await apiDeleteChat(backendUrl.value, chatId)
+      const result = await apiDeleteChat(chatId)
       if (result.success) {
         const index = chatList.value.findIndex(c => c.id === chatId)
         if (index !== -1) {
@@ -327,8 +320,7 @@ export function useChat() {
    * 丢弃"待提交"面板：把那条消息从会话里摘掉，并清掉挂着的录音。
    *
    * <p>只针对**还没开始**的那一场。已经开始处理或已经出过报告的消息一律不碰 ——
-   * 之前的实现会把 `interviewMsg.interview` 置空，于是"上一场的 AI 气泡"变成一个
-   * 只剩复制按钮的空壳（进度和报告一起消失），这正是本次要修的问题。
+   * 清空它们的 `interview` 会让那一场的气泡只剩一个复制按钮。
    */
   const discardPendingInterview = () => {
     const chat = chatList.value.find(c => c.id === pendingInterviewChatId.value)
@@ -357,12 +349,11 @@ export function useChat() {
   /**
    * 面试模式：选中录音文件。
    *
-   * <p>这里刻意**不上传**，只把文件挂起来并点亮"开始总结"按钮 ——
-   * 80MB 的音频传起来要几秒到几十秒，用户点错了想换文件时不该已经花掉一次上传。
+   * <p>这里刻意**不上传**，只把文件挂起来并点亮"开始总结"按钮，
+   * 让用户换文件时不必先付一次上传成本。
    *
-   * <p>只创建/复用一条"待提交"的上传卡：已经跑起来的、已经出过报告的场次都属于历史，
-   * 不能拿来复用（复用会把上一场的报告就地清空）。真正开始总结时，会在这条消息上
-   * 开一场新的面试，并把它排到用户气泡之后（见 `sendMessage`）。
+   * <p>只创建/复用一条"待提交"的上传卡：已经跑起来的、已经出过报告的场次属于历史，
+   * 复用它们会把上一场的报告就地清空。
    *
    * @param chat 目标会话（由调用方传入，避免依赖后面才声明的 computed）
    */
@@ -388,9 +379,8 @@ export function useChat() {
   }
 
   /**
-   * 把"开始总结"按钮的点击转成一次正常的发送流程。
-   * 复用 `sendMessage` 的好处是：面试和对话/PPT 走的是同一条入口，
-   * 用户消息、标题、isNew 这些处理不会出现两套。
+   * 把"开始总结"按钮的点击转成一次正常的发送流程，
+   * 让面试与对话/PPT 复用同一条入口（用户消息、标题、isNew 只有一套处理）。
    */
   const interviewStartRequested = () => {
     void sendMessage()
@@ -432,7 +422,7 @@ export function useChat() {
    *
    * <p>顺序很重要：调用方已经把用户气泡 push 进去了，这里必须把面板消息
    * **挪到最后**，否则会出现"AI 气泡排在用户气泡之前"（选文件时就建卡，
-   * 用户消息是点开始总结时才补上的），也就是用户看到的"气泡排序不对"。
+   * 用户消息是点开始总结时才补上的）。
    */
   const takeInterviewMessage = (chat: Chat): Message => {
     const pending = chat.messages.find(m => m.id === pendingInterviewMsgId.value)
@@ -458,9 +448,6 @@ export function useChat() {
 
   /**
    * 面试模式：校验 + 上传 + 开始接收进度（进度写进 `target.interview`）。
-   *
-   * <p>是"普通请求上传 → 立刻开 SSE 流"两步，而不是上传本身流式：
-   * multipart 落 MinIO 要 1~3 秒，后端上传接口本身就是同步返回的。
    */
   const startInterview = async (target: Message) => {
     const file = interviewFile.value
@@ -480,7 +467,6 @@ export function useChat() {
     try {
       // 进度由 InterviewPanel 直接读这条消息自己的 reactive 对象实时渲染，
       // 这里 await 到整场结束只是为了控制"处理中"的按钮状态
-      // 带上当前会话ID：后端据此在 ai_session 写一行，这场面试才会进入会话历史
       await interview.start(file, session, currentChatId.value)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -561,7 +547,7 @@ export function useChat() {
         return
       }
 
-      const result = await apiUploadFile(backendUrl.value, file)
+      const result = await apiUploadFile(file)
       uploadedFileId.value = result.fileId
     } catch (error) {
       console.error('文件上传错误:', error)
@@ -718,11 +704,9 @@ export function useChat() {
       thinking: [],
       reference: [],
       recommend: [],
-      // 思考过程默认展开：在"首次渲染"就置为 true，
-      // 这样 .thinking-content 从一开始就是 display:'' ，
-      // 不依赖流式期间的任何响应式更新或 DOM 补丁（流式时 aiMsg 是原始对象，
-      // 改它不会触发重渲染，箭头/折叠状态都容易停在初始值）。
-      // 有思考内容时 .thinking-section 才会显示，所以这里置 true 不会提前露出空面板。
+      // 首次渲染就置 true：流式期间 aiMsg 是响应式数组里的原始对象，改它不会触发重渲染，
+      // 折叠状态很容易停在初始值，所以不依赖后续的响应式更新或 DOM 补丁。
+      // 有思考内容时 .thinking-section 才显示，这里置 true 不会提前露出空面板。
       showThinking: true,
       showReference: false,
       hasThinking: false,
@@ -750,7 +734,6 @@ export function useChat() {
     try {
       abortController = new AbortController()
       const reader = await apiStreamChat(
-        backendUrl.value,
         selectedAgent.value,
         message || (hasFile ? '请分析这个文件' : ''),
         currentChatId.value!,
@@ -861,7 +844,7 @@ export function useChat() {
       abortController = null
     }
 
-    await apiStopStream(backendUrl.value, currentChatId.value!)
+    await apiStopStream(currentChatId.value!)
 
     finalizeStream()
   }
@@ -985,7 +968,6 @@ export function useChat() {
   }
 
   return {
-    backendUrl,
     connectionError,
     agents,
     selectedAgent,
@@ -1019,7 +1001,7 @@ export function useChat() {
     confirmMessage,
     confirmOk,
     confirmCancel,
-    // 面试总结（步骤 5）
+    // 面试总结
     interviewAgreed,
     interviewFile,
     // 每条面试消息各自持有 session，所以"是否在跑/是否忙/待提交的文件名"都要按消息算

@@ -7,13 +7,11 @@ import com.dobao.dobaobackend.agent.BaseAgent;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.*;
 import com.dobao.dobaobackend.entity.vo.OverAllState;
-import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
 import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.prompts.PlanExecutePrompts;
 import com.dobao.dobaobackend.service.AgentTaskManager;
 import com.dobao.dobaobackend.service.AiSessionService;
 import com.dobao.dobaobackend.utils.ThinkTagParser;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.chat.client.ChatClient;
@@ -48,25 +46,17 @@ public class PlanExecuteAgent extends BaseAgent {
     private ChatClient chatClient;
     private final List<ToolCallback> tools;
 
-    // plan-execute 总轮数
     private final int maxRounds;
 
-    // context 压缩阈值
     private final int contextCharLimit;
 
-    // 控制工具并发调用上限
     private final Semaphore toolSemaphore;
 
-    // 工具重试次数
     private final int maxToolRetries;
 
-    // 用于管理所有需要取消的Disposable
     private Disposable.Composite compositeDisposable;
 
-    // 存储所有搜索结果，用于保存到数据库和发送给前端
     private List<SearchResult> allReferences;
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public PlanExecuteAgent(ChatModel chatModel,
                             List<ToolCallback> tools,
@@ -87,7 +77,6 @@ public class PlanExecuteAgent extends BaseAgent {
         this.sessionService = sessionService;
         this.taskManager = taskManager;
 
-        // 初始化工具记录集合
         this.usedTools = new HashSet<>();
     }
 
@@ -99,13 +88,10 @@ public class PlanExecuteAgent extends BaseAgent {
         private ChatModel chatModel;
         private List<ToolCallback> tools = new ArrayList<>();
 
-        // 默认迭代3轮
         private int maxRounds = 3;
 
-        // 默认context压缩阈值20000字符
         private int contextCharLimit = 50000;
 
-        // 默认工具重试次数2次
         private int maxToolRetries = 2;
 
         private ChatMemory chatMemory;
@@ -188,34 +174,28 @@ public class PlanExecuteAgent extends BaseAgent {
 
     public Flux<String> callInternal(String conversationId, String question) {
 
-        // 检查是否已有任务在执行
         Flux<String> checkResult = checkRunningTask(conversationId);
         if (checkResult != null) {
             return checkResult;
         }
 
-        // 初始化状态和缓冲区
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
         AtomicBoolean finished = new AtomicBoolean(false);
 
-        // 注册任务到管理器
         if (!registerTaskInternal(conversationId, sink)) {
             return Flux.error(new IllegalStateException("该会话正在执行中，请稍后再试"));
         }
 
-        // 初始化会话信息
         initTimers();
         clearUsedTools();
         currentConversationId = conversationId;
         currentQuestion = question;
         compositeDisposable = Disposables.composite();
 
-        // 创建缓冲区
-        StringBuilder finalAnswerBuffer = new StringBuilder(); // 最终回答
-        StringBuilder thinkingBuffer = new StringBuilder(); // 思考过程
-        allReferences = new ArrayList<>(); // 搜索内容
+        StringBuilder finalAnswerBuffer = new StringBuilder();
+        StringBuilder thinkingBuffer = new StringBuilder();
+        allReferences = new ArrayList<>();
 
-        // 初始化状态并保存问题
         OverAllState state = initStateAndSaveQuestion(conversationId, question);
 
         // 启动流程：需求澄清 -> 研究主题生成 -> 执行循环(计划列表生成->任务并行执行->批判总结) ->总结报告

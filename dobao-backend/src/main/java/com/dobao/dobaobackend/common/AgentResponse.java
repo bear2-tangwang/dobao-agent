@@ -44,31 +44,20 @@ public class AgentResponse {
         this.data = data;
     }
 
-    // ===== 工厂方法 =====
-
-    /**
-     * 创建text类型响应
-     */
     public static String text(String content) {
         return new AgentResponse(TYPE_TEXT, content).toJson();
     }
 
-    /**
-     * 创建thinking类型响应
-     */
     public static String thinking(String content) {
         return new AgentResponse(TYPE_THINKING, content).toJson();
     }
 
-    /**
-     * 创建reference类型响应
-     */
     public static String reference(String content, Integer count) {
         return new AgentResponse(TYPE_REFERENCE, content, count).toJson();
     }
 
     /**
-     * 创建reference类型响应（无count，自动解析JSON数组计算count）
+     * 未传 count 时按 content 里 JSON 数组的长度补上
      */
     public static String reference(String content) {
         try {
@@ -77,51 +66,39 @@ public class AgentResponse {
                 return reference(content, jsonArray.size());
             }
         } catch (Exception e) {
-            // 解析失败，count为null
+            // 解析失败：按无 count 处理
         }
         return reference(content, null);
     }
 
-    /**
-     * 创建error类型响应
-     */
     public static String error(String content) {
         return new AgentResponse(TYPE_ERROR, content).toJson();
     }
 
-    /**
-     * 创建recommend类型响应
-     */
     public static String recommend(String content) {
         return recommend(content, null);
     }
 
-    /**
-     * 创建recommend类型响应（带count）
-     */
     public static String recommend(String content, Integer count) {
         return new AgentResponse(TYPE_RECOMMEND, content, count).toJson();
     }
 
     /**
-     * 创建JSON类型响应（自定义类型）
+     * 自定义类型；type 为 reference 且 content 是 JSON 数组时补 count
      */
     public static String json(String type, Object content) {
         if (TYPE_REFERENCE.equals(type) && content instanceof String jsonStr) {
             try {
-                // 尝试解析为JSONArray来计算数量
                 var jsonArray = JSON.parseArray(jsonStr);
                 if (jsonArray != null && !jsonArray.isEmpty()) {
                     return reference(jsonStr, jsonArray.size());
                 }
             } catch (Exception e) {
-                // 解析失败，使用普通json响应
+                // 解析失败：按普通 json 响应处理
             }
         }
         return new AgentResponse(type, content == null ? null : content.toString()).toJson();
     }
-
-    // ===== JSON转换 =====
 
     public String toJson() {
         JSONObject obj = new JSONObject();
@@ -145,8 +122,6 @@ public class AgentResponse {
         }
         return obj.toJSONString();
     }
-
-    // ===== Getter / Setter =====
 
     public String getType() {
         return type;

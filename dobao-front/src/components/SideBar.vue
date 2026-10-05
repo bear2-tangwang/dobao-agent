@@ -5,7 +5,6 @@ import type { Chat } from '@/types'
 defineProps<{
   chatList: Chat[]
   currentChatId: string | null
-  backendUrl: string
   /** 当前登录用户（未登录时传 null，不渲染用户区） */
   user?: {
     nickname: string | null
@@ -21,7 +20,7 @@ defineEmits<{
   (e: 'logout'): void
 }>()
 
-/** 头像加载失败（GitHub 头像被墙/断网）时退化成首字母，不让用户区塌掉 */
+/** 头像加载失败时退化成首字母，不让用户区塌掉 */
 const avatarBroken = ref(false)
 </script>
 
@@ -68,10 +67,6 @@ const avatarBroken = ref(false)
         <button class="logout-btn" type="button" title="退出登录" @click="$emit('logout')">
           <i class="fas fa-right-from-bracket"></i>
         </button>
-      </div>
-      <div class="model-info">
-        <i class="fas fa-link"></i>
-        <span>{{ backendUrl }}</span>
       </div>
     </div>
   </div>

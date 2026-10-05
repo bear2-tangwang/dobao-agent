@@ -13,24 +13,14 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 
 /**
- * 面试总结 → {@code ai_session} 的写入器（本需求唯一的会话行写入点）。
+ * 面试总结 → {@code ai_session} 的写入器（本功能唯一的会话行写入点）。
  *
- * <p><b>一场面试 = 一行会话记录</b>：
- * <ul>
- *   <li>{@code session_id} = 前端 conversationId（一个会话可含多场面试 → 多行）</li>
- *   <li>{@code agent_type} = {@value #AGENT_TYPE}</li>
- *   <li>{@code question} = 录音文件名（侧边栏标题取 question，正好显示成文件名）</li>
- *   <li>{@code answer} = 状态摘要（报告正文的唯一来源仍是 {@code ai_interview.report_json}）</li>
- *   <li>{@code fileid} = interviewId —— 沿用本表把 {@code fileid} 当多态业务指针的既有用法
- *       （见 {@code docs/plans/2026-10-03-interview-session-history-design.md} §2 决策 4）</li>
- * </ul>
+ * <p>一场面试 = 一行会话记录：{@code session_id} 取前端 conversationId，{@code agent_type} 为
+ * {@value #AGENT_TYPE}，{@code question} 为录音文件名（侧边栏标题），{@code answer} 为状态摘要，
+ * {@code fileid} 存 interviewId（沿用本表把 {@code fileid} 当多态业务指针的既有用法）。
  *
- * <p><b>为什么单独成 Bean</b>：上传写入在 {@link com.dobao.dobaobackend.service.InterviewService}
- * （快路径），回填在 {@link com.dobao.dobaobackend.service.InterviewTaskService}（异步线程），
- * 而这两个类被明确要求互不依赖（见 InterviewService 类注释）。本类作为第三方被两者依赖。
- *
- * <p>回填按 {@code interviewId} 命中<b>所有</b>引用它的会话行：同一段录音可能出现在多个会话里
- * （幂等命中同一场分析），这些行都该拿到同一份摘要。
+ * <p>回填按 {@code interviewId} 命中<b>所有</b>引用它的会话行：同一段录音可能出现在多个会话里，
+ * 这些行都该拿到同一份摘要。单独成 Bean 是因为上传写入与异步回填分属两个互不依赖的服务类。
  */
 @Slf4j
 @Component
@@ -48,23 +38,17 @@ public class InterviewSessionRecorder {
     /**
      * 记录"某会话里开始了某场面试"。幂等：同一 (会话, 面试) 只保留一行。
      *
-     * <p>新建那行之后会立刻写一次"进行中"占位摘要，因此<b>本类是 {@code answer} 列的唯一写入者</b>，
-     * 且"有会话行就有非空 answer"是本类维持的不变式（幂等命中已有行的分支不重写 answer —— 那一行
-     * 可能已经是"已完成"，具体回填由 {@code InterviewService#backfillReusedSummary} 按状态补）。
-     *
-     * <p>会话ID在入口统一 {@code trim()}（见下方注释）：这是本需求唯一的会话行写入点，
-     * 收口在这里不会漏；trim 后为空则退化为"只写 ai_interview"。
+     * <p>本类是 {@code answer} 列的唯一写入者，"有会话行就有非空 answer"由它维持；
+     * 幂等命中已有行时不重写 answer —— 那一行可能已经是"已完成"。
      *
      * @param conversationId 前端会话ID；为空（或空白）表示老调用方，退化为"只写 ai_interview"
-     * @param userId         归属用户。<b>必须由调用方传入</b>：本方法虽然当前只在请求线程里被调用，
-     *                       但 {@code UserContext}(ThreadLocal) 在异步/SSE 链路上不可用，
-     *                       显式传参才不会在以后被挪到异步路径时静默写错归属
+     * @param userId         归属用户。必须由调用方传入：{@code UserContext}(ThreadLocal)
+     *                       在异步/SSE 链路上不可用，显式传参才不会在挪到异步路径时静默写错归属
      */
     public void recordUploaded(String conversationId, String interviewId, String fileName, String userId) {
-        // 入口先 trim：带首尾空白的 id（例如 " conv-1 "）能通过 hasText，但原样写进
-        // ai_session.session_id 后与 chat 行的 session_id 不一致 —— 前端按 conversationId
-        // 取会话详情会查不到这行，用户看到一个永远点不开的"幽灵会话"。
-        // 查重（find）与写入（saveQuestion）都必须用 trim 后的值，否则同一会话重复上传会绕过幂等。
+        // 入口先 trim：带首尾空白的 id 能通过 hasText，但原样写进 session_id 后与 chat 行的
+        // session_id 不一致，前端按 conversationId 取会话详情会查不到；查重与写入也都必须用
+        // trim 后的值，否则同一会话重复上传会绕过幂等。
         String sessionId = conversationId == null ? null : conversationId.trim();
         if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(interviewId)) {
             log.info("缺少会话ID或面试ID，跳过会话记录: conversationId={}, interviewId={}",
@@ -74,7 +58,7 @@ public class InterviewSessionRecorder {
         AiSession existing = find(sessionId, interviewId);
         if (existing != null) {
             // 同一会话重复提交同一段录音（音频哈希幂等命中）：只把这场顶到列表最前。
-            // 列级更新（不是整行写回），避免把读到的旧 answer 一起覆盖回去。
+            // 列级更新而不是整行写回，避免把读到的旧 answer 一起覆盖回去。
             sessionService.update(new LambdaUpdateWrapper<AiSession>()
                     .eq(AiSession::getId, existing.getId())
                     .set(AiSession::getUpdateTime, LocalDateTime.now()));
@@ -88,13 +72,8 @@ public class InterviewSessionRecorder {
                 .fileid(interviewId)
                 .agentType(AGENT_TYPE)
                 .build());
-        // 插入成功后立刻写一次"进行中"占位摘要，让"会话行的 answer 永不为 NULL"成为
-        // 本类（唯一写入者）的不变式。两个理由：
-        //  ① 上传到报告就绪之间是分钟级的转写 + 分析，列表/详情会读到 NULL，只能显示空白；
-        //  ② 幂等命中已有记录时不会重跑状态机（既不重转写也不重分析），那一行不会有任何人
-        //     替它回填摘要 —— 只能由 InterviewService 按当前状态补一次（见
-        //     InterviewService#backfillReusedSummary），而它需要这里先有个兜底值。
-        // 重试路径由 markRunning 覆盖同一列，语义一致。
+        // 插入后立刻写一次"进行中"占位摘要：上传到报告就绪之间是分钟级耗时，列表/详情读到 NULL
+        // 只能显示空白；且幂等命中已有记录时不会重跑状态机，那一行没有别人替它回填摘要。
         updateSummary(interviewId, RUNNING_SUMMARY);
         log.info("面试会话已创建: conversationId={}, interviewId={}, fileName={}",
                 sessionId, interviewId, fileName);
@@ -132,10 +111,8 @@ public class InterviewSessionRecorder {
                 .eq(AiSession::getAgentType, AGENT_TYPE)
                 .eq(AiSession::getFileid, interviewId)
                 .set(AiSession::getAnswer, answer)
-                // 必须显式写 update_time：ai_session 这一列在现有链路里全部来自 JVM 时钟
-                //（saveQuestion/updateAnswer 都用 LocalDateTime.now()）。省掉这行会让 MySQL 的
-                // ON UPDATE CURRENT_TIMESTAMP 写入 UTC，比 JVM 时钟早 8 小时，于是
-                // SessionController 的 update_time desc 排序把这行排到 chat 行后面。
+                // update_time 必须显式写：省掉这行会落到 MySQL 的 ON UPDATE CURRENT_TIMESTAMP
+                //（UTC，比 JVM 时钟早 8 小时），把会话行排到 chat 行后面
                 .set(AiSession::getUpdateTime, LocalDateTime.now()));
         if (updated) {
             log.info("面试会话摘要已回填: interviewId={}, answer={}", interviewId, answer);

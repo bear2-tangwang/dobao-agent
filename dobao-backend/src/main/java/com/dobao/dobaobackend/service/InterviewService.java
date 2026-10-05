@@ -34,12 +34,8 @@ import java.util.UUID;
 /**
  * 面试总结 · 上传与查询服务。
  *
- * <p>职责边界：本类只做"快路径"——上传落库、查询、把耗时动作交给
- * {@link InterviewTaskService}。状态机的所有"写"都在 {@code InterviewTaskService} 里，
- * 避免两个类互相依赖。
- *
- * <p>上传接口必须在 3 秒内返回（编码方案步骤 2 的验收项），因此这里
- * <b>只落 MinIO + 建记录</b>，取 URL / 提交转写任务一律异步。
+ * <p>本类只做"快路径"——上传落库、查询，耗时动作交给 {@link InterviewTaskService}；
+ * 状态机的所有"写"都在 {@code InterviewTaskService} 里，避免两个类互相依赖。
  */
 @Slf4j
 @Service
@@ -48,7 +44,7 @@ public class InterviewService {
 
     /**
      * 未登录/无上下文时的兜底用户，与各表 user_id 列的 DEFAULT 'default' 保持一致。
-     * 正常情况下由 {@code github.oauth.default-user-id} 配置提供（见 {@link #currentUserId()}）。
+     * 正常情况下由 {@code github.oauth.default-user-id} 配置提供。
      */
     private static final String DEFAULT_USER_ID = "default";
 
@@ -70,9 +66,7 @@ public class InterviewService {
 
     /**
      * 取当前登录用户ID（未登录时回退配置的兜底用户）。
-     *
-     * <p>只在请求线程里可靠；异步链路（转写轮询、报告生成）里是兜底值，
-     * 那些地方改用「由 interviewId 反查 ai_interview.user_id」拿归属。
+     * 只在请求线程里可靠；异步链路（转写轮询、报告生成）读不到 UserContext，改用 interviewId 反查归属。
      */
     private String currentUserId() {
         return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
@@ -81,19 +75,11 @@ public class InterviewService {
     /**
      * 上传面试录音。
      *
-     * <p>幂等规则：先算音频内容 SHA-256，命中已有记录且那条记录不是 FAILED 时直接复用，
-     * 不重复上传、不重复计费。注意<b>不能只靠 {@code asr_task_id} 判重</b>——它在提交转写
-     * 之前是 NULL，拦不住重复上传。
+     * <p>幂等：先算音频内容 SHA-256 命中已有记录且该记录不是 FAILED 时直接复用，不重复上传、不重复计费。
+     * 不能只靠 {@code asr_task_id} 判重——它在提交转写之前是 NULL。
      *
-     * <p>本方法同时负责"让这场面试出现在会话列表里"：拿到 interviewId 后立刻写一行
-     * {@code ai_session}（见 {@link InterviewSessionRecorder}）。<b>幂等命中的分支也要写</b>——
-     * 否则把已上传过的录音传到另一个会话里，那个会话永远不会出现这场面试。
-     *
-     * <p><b>已知代价（刻意取舍）</b>：会话行与 {@code ai_interview} 同事务，会话行写入失败会
-     * 整体回滚，但 MinIO 上已上传的音频对象不参与回滚（落盘发生在
-     * {@link FileManageService#uploadFile} 内部、事务之外），因此这种回滚会留下一个
-     * 没有任何 DB 引用的孤儿对象。相比"上传成功却查不到记录"，这里选择让 DB 保持一致，
-     * 孤儿对象由 MinIO 生命周期策略与后续清理任务兜底。
+     * <p>写入会话行的动作在幂等命中的分支里也必须执行，否则录音传到另一个会话时那场面试不会出现在该会话。
+     * 会话行与 {@code ai_interview} 同事务，但 MinIO 上的音频对象不参与回滚，回滚会留下孤儿对象。
      *
      * @param conversationId 前端会话ID（可选；为空时退化为"只写 ai_interview"）
      * @param file           上传的音频（mp3/wav/m4a/aac/flac/amr，≤80MB）
@@ -101,14 +87,11 @@ public class InterviewService {
      */
     @Transactional(rollbackFor = Exception.class)
     public InterviewUploadVO upload(String conversationId, MultipartFile file) {
-        // 上传接口始终在请求线程里执行，可以从 UserContext 取归属用户
         String userId = currentUserId();
-        // 上传前置校验：格式 + 大小
         validate(file);
 
         String audioHash = sha256(file);
         AiInterview existing = findByAudioHash(audioHash);
-        // 去重：已有记录且不是 FAILED 状态时直接复用，不重复转写、不重复计费
         if (existing != null && !InterviewStatus.FAILED.name().equals(existing.getStatus())) {
             log.info("音频内容命中已有记录，直接复用: audioHash={}, interviewId={}, status={}",
                     audioHash, existing.getInterviewId(), existing.getStatus());
@@ -120,7 +103,6 @@ public class InterviewService {
                     existing.getFileName(), existing.getFileSize(), true);
         }
 
-        // 落 MinIO + ai_file_info 表 + ai_interview 记录表（文件归属当前用户）
         FileInfo fileInfo = fileManageService.uploadFile(file, userId);
         String objectName = FileManageService.generateObjectName(fileInfo.getFileId(), fileInfo.getFileType());
 
@@ -142,7 +124,7 @@ public class InterviewService {
         log.info("面试记录已创建: interviewId={}, fileId={}, objectName={}, size={}B",
                 record.getInterviewId(), fileInfo.getFileId(), objectName, fileInfo.getFileSize());
 
-        // 提交异步任务：取音频 URL（dev 要上传到百炼临时存储）+ 提交转写任务
+        // 异步：取音频 URL（dev 要上传到百炼临时存储）+ 提交转写任务
         taskService.submitTranscriptionAsync(record.getInterviewId(), objectName);
 
         return new InterviewUploadVO(record.getInterviewId(), record.getStatus(),
@@ -152,9 +134,8 @@ public class InterviewService {
     /**
      * 复用时补齐会话摘要。
      *
-     * <p>命中已有记录时不会再走状态机（既不重跑转写也不重跑分析），所以这场面试的会话行
-     * 不会有人替它回填摘要 —— 只能在这里按它当前的状态补一次，否则 {@code answer} 会永远停在
-     * "进行中"占位（并作为一条没有配对回答的 UserMessage 进 chat memory）。
+     * <p>命中已有记录时不会再走状态机（既不重跑转写也不重跑分析），没有别的地方会替它回填摘要，
+     * 否则 {@code answer} 会永远停在"进行中"占位。
      */
     private void backfillReusedSummary(AiInterview existing) {
         String interviewId = existing.getInterviewId();
@@ -172,32 +153,16 @@ public class InterviewService {
             }
             return;
         }
-        // FAILED 不会走到这里（命中条件排除了它：失败会重新提交转写）；其余状态都还在处理中
+        // FAILED 不会走到这里（命中条件排除了它）；其余状态都还在处理中
         sessionRecorder.markRunning(interviewId);
-    }
-
-    /**
-     * 按业务标识取记录（不做归属校验）。
-     *
-     * <p>只允许在"归属已由上游确认"或"系统内部链路"里使用；
-     * 任何对外接口都应该用 {@link #requireOwnedByInterviewId(String, String)}。
-     */
-    private AiInterview requireByInterviewId(String interviewId) {
-        AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
-                .eq(AiInterview::getInterviewId, interviewId));
-        if (record == null) {
-            throw new IllegalArgumentException("面试记录不存在: " + interviewId);
-        }
-        return record;
     }
 
     /**
      * 按「业务标识 + 归属用户」取记录。
      *
      * <p>对外的查询接口（状态/报告/下载/重试）一律走这里：{@code interviewId} 是 UUID，
-     * 但"拿到别人的 ID 就能读别人的面试报告"仍是越权，所以归属必须进 WHERE。
-     *
-     * <p>归属不符时报"不存在"而不是 403 —— 不回 403 是为了不泄露"这个 ID 真实存在"。
+     * 但"拿到别人的 ID 就能读别人的面试报告"仍是越权，所以归属必须进 WHERE；
+     * 归属不符时报"不存在"而不是 403，以免泄露这个 ID 真实存在。
      */
     private AiInterview requireOwnedByInterviewId(String interviewId, String userId) {
         AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
@@ -209,9 +174,6 @@ public class InterviewService {
         return record;
     }
 
-    /**
-     * 按音频内容哈希查记录。
-     */
     private AiInterview findByAudioHash(String audioHash) {
         if (!StringUtils.hasText(audioHash)) {
             return null;
@@ -225,11 +187,9 @@ public class InterviewService {
     /**
      * 查询状态（供前端做阶段化进度展示）。
      *
-     * <p><b>这里绝不能解析 {@code transcript_json}</b>：前端从上传那一刻起就在轮询这个接口，
-     * 而原始 JSON 里约 80% 是用不到的逐字 {@code words[]}（实测 5.5 分钟音频原始 JSON 80KB、
-     * 句子级投影只有 15KB）。早期版本为了拿"句子数 / 说话人数"每次请求都全量反序列化，
-     * 结果是每 3~5 秒一次 JSON 解析 + 一行 INFO 日志，把日志刷满、看着像卡死。
-     * 现在这两个数字来自转写落库时写入的 {@code sentence_count} / {@code speaker_count} 列。
+     * <p>绝不能解析 {@code transcript_json}：前端从上传那一刻起就在轮询这个接口，而原始 JSON 里
+     * 大部分是用不到的逐字 {@code words[]}。句数/人数取自转写落库时写入的
+     * {@code sentence_count} / {@code speaker_count} 列。
      */
     public InterviewStatusVO status(String interviewId) {
         AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
@@ -246,9 +206,6 @@ public class InterviewService {
                 reportReady);
     }
 
-    /**
-     * 取结构化报告。
-     */
     public InterviewReport report(String interviewId) {
         AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
         if (!StringUtils.hasText(record.getReportJson())) {
@@ -280,12 +237,8 @@ public class InterviewService {
     /**
      * 重试：有文字稿就只重跑分析（不重新转写），否则重新提交转写。
      *
-     * <p>它同时是唯一的"重新生成报告"入口：有文字稿时只依赖已落库的
-     * {@code transcript_json}，<b>不会重新转写</b>、不重复计费
-     * —— 这是编码方案步骤 4"重新生成报告不重复转写"的验收项。
-     *
-     * <p>这样"转写失败"和"分析失败"两种失败都能原地重试，且都不需要用户重新上传音频
-     * （音频在 MinIO 里保留 30 天）。
+     * <p>有文字稿时只依赖已落库的 {@code transcript_json}，不会重新转写、不重复计费，
+     * 所以"转写失败"和"分析失败"都能原地重试，不需要用户重新上传音频（音频在 MinIO 保留 30 天）。
      */
     public void retry(String interviewId) {
         AiInterview record = requireOwnedByInterviewId(interviewId, currentUserId());
@@ -304,21 +257,14 @@ public class InterviewService {
     }
 
     /**
-     * 级联删除若干场面试：<b>先删 MinIO 对象，再删 ai_interview 记录</b>。
+     * 级联删除若干场面试：先删 MinIO 对象，再删 ai_interview 记录。
      *
-     * <p>顺序是刻意的：对象删除失败就抛异常、由调用方（删除会话）的事务整体回滚，
-     * 用户看到"删除失败"；而 MinIO 的 removeObject 对不存在的 key 是幂等的，
-     * 所以"对象已删、事务回滚"之后再重试一次就能收敛。反过来先删库，则可能出现
-     * "记录没了、录音还在 MinIO 里"这种既不可见又删不掉的状态。
+     * <p>顺序是刻意的：对象删除失败就抛异常、由调用方（删除会话）的事务整体回滚，先删库则会出现
+     * "记录没了、录音还在 MinIO 里"这种既不可见又删不掉的状态。本方法不带 {@code @Transactional}，
+     * 原子性依赖调用方的事务，直接调用会退化成两步各自提交。
      *
-     * <p><b>本方法要求调用方已开启事务</b>：它自己不带 {@code @Transactional}，
-     * "先删对象后删库"的原子性靠 {@code SessionController.deleteSession} 的事务提供。
-     * 直接调用它（没有外层事务）会退化成两步各自提交，中途失败就留下半状态。
-     *
-     * <p><b>仍被别的会话引用时只解引用</b>：同一段录音可以在多个会话里各上传一次
-     * （音频哈希幂等命中同一个 interviewId，见 {@link #upload}），删其中一个会话不该
-     * 带走另一个会话仍在用的录音与报告 —— 那种情况下只跳过删除（不删 MinIO 对象、
-     * 不删 {@code ai_interview} 行），由删掉会话行本身来完成"解引用"。
+     * <p>仍被别的会话引用的面试只解引用（不删 MinIO 对象也不删记录）：同一段录音可以在多个会话里
+     * 各上传一次且幂等命中同一个 interviewId，删一个会话不该带走另一个会话仍在用的录音与报告。
      *
      * @param interviewIds   面试ID（会话行里 agent_type=interview 的 fileid）；可为空
      * @param conversationId 正在被删除的那个会话（用于判断这场面试是否还被别的会话引用）
@@ -328,7 +274,6 @@ public class InterviewService {
             return;
         }
         List<String> objectNames = new ArrayList<>();
-        // 真正要删的那批：被别的会话引用的不能进来，否则 delete 会把别人在用的记录删掉
         List<String> deletedIds = new ArrayList<>();
         for (String interviewId : interviewIds) {
             if (referencedByOtherConversation(interviewId, conversationId)) {
@@ -338,11 +283,10 @@ public class InterviewService {
             }
             AiInterview record = interviewMapper.selectOne(new LambdaQueryWrapper<AiInterview>()
                     .eq(AiInterview::getInterviewId, interviewId)
-                    // 只能删自己的：别人的 interviewId 传进来时，这里查不到记录，
-                    // 于是不会删它的 MinIO 对象，delete 也命中 0 行
+                    // 归属必须进 WHERE：别人的 interviewId 查不到记录，也就不会删它的 MinIO 对象
                     .eq(AiInterview::getUserId, currentUserId()));
             if (record == null) {
-                // 记录本就不存在：没有对象可删，但归入本批（delete 命中 0 行），语义仍是"这场归我们删"
+                // 记录本就不存在：没有对象可删，仍归入本批（delete 命中 0 行）
                 deletedIds.add(interviewId);
                 continue;
             }
@@ -382,8 +326,7 @@ public class InterviewService {
     /**
      * 上传前置校验：格式 + 大小。
      *
-     * <p>时长校验（≤1.5 小时）放在转写返回之后做——pom 里没有音频解析库，
-     * 上传阶段无法读时长；这是刻意的取舍，见分析报告 §4.10。
+     * <p>时长校验（≤1.5 小时）放在转写返回之后做：pom 里没有音频解析库，上传阶段读不到时长。
      */
     private void validate(MultipartFile file) {
         if (file == null || file.isEmpty()) {

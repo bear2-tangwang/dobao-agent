@@ -68,8 +68,8 @@ public class AgentController implements InitializingBean {
     /**
      * 把归属用户写进 Reactor Context。
      *
-     * <p>为什么需要它：Agent 的 {@code @Tool} 方法（如文件内容检索）由 Spring AI 在
-     * Reactor 链内部调用，那里既没有请求线程的 ThreadLocal，也不该让 LLM 自己传用户身份。
+     * <p>Agent 的 {@code @Tool} 方法（如文件内容检索）由 Spring AI 在 Reactor 链内部调用，
+     * 那里没有请求线程的 ThreadLocal，也不该让 LLM 自己传用户身份。
      * 工具侧用 {@code Mono.deferContextual} 读 {@link UserContext#REQUEST_USER_KEY}。
      */
     private Flux<String> withRequestUser(Flux<String> stream, String userId) {
@@ -109,11 +109,10 @@ public class AgentController implements InitializingBean {
             // UserContext(ThreadLocal) 在那边是 null
             String userId = currentUserId();
             ChatReactAgent agent = initUnifiedAgent(userId);
-            // 获取当前会话历史记忆 默认30条记忆
             ChatMemory persistentMemory = agent.createPersistentChatMemory(conversationId, 30);
             agent.setChatMemory(persistentMemory);
-            // 把归属用户写进 Reactor Context：Agent 的 @Tool 方法（FileContentService）跑在
-            // 链内部，读不到请求线程的 ThreadLocal，只能从这里取（见 UserContext#REQUEST_USER_KEY）
+            // Agent 的 @Tool 方法（FileContentService）跑在链内部，读不到请求线程的 ThreadLocal，
+            // 身份只能从这里取（见 UserContext#REQUEST_USER_KEY）
             return withRequestUser(agent.stream(conversationId, query, fileId), userId);
         } catch (Exception e) {
             log.error("处理统一对话请求失败", e);
@@ -134,7 +133,6 @@ public class AgentController implements InitializingBean {
         try {
             String userId = currentUserId();
             PPTBuilderAgent pptBuilderAgent = initPPTBuilderAgent(userId);
-            // 使用持久化记忆加载历史记录
             ChatMemory persistentMemory = pptBuilderAgent.createPersistentChatMemory(conversationId, 30);
             pptBuilderAgent.setChatMemory(persistentMemory);
             return withRequestUser(pptBuilderAgent.execute(conversationId, query), userId);
@@ -158,7 +156,6 @@ public class AgentController implements InitializingBean {
         try {
             String userId = currentUserId();
             PlanExecuteAgent planExecuteAgent = initPlanExecuteAgent(userId);
-            // 使用持久化记忆加载历史记录
             ChatMemory persistentMemory = planExecuteAgent.createPersistentChatMemory(conversationId, 30);
             planExecuteAgent.setChatMemory(persistentMemory);
             return withRequestUser(planExecuteAgent.stream(conversationId, query), userId);

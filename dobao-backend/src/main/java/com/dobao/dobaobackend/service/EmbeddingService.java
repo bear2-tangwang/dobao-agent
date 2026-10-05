@@ -54,9 +54,6 @@ public class EmbeddingService {
         vectorStore = pgVectorStoreFactory.createPgVectorStore("vector_file_info");
     }
 
-    /**
-     * 批量向量化文档
-     */
     public List<float[]> embed(List<Document> documents) {
         return documents.stream().map(document -> embeddingModel.embed(document.getText())).collect(Collectors.toList());
     }
@@ -89,7 +86,6 @@ public class EmbeddingService {
         try {
             Query query = Query.builder().text(question).build();
 
-            // 1. 问题压缩重写
             ChatClient chatClient = ChatClient.builder(chatModel).build();
             CompressionQueryTransformer queryTransformer = CompressionQueryTransformer.builder()
                     .chatClientBuilder(chatClient.mutate())
@@ -98,7 +94,6 @@ public class EmbeddingService {
             Query compressed = queryTransformer.transform(query);
             log.info("压缩重写后的Query: {}", compressed.text());
 
-            // 2. 问题扩展
             QueryExpander queryExpander = MultiQueryExpander.builder()
                     .chatClientBuilder(chatClient.mutate())
                     .numberOfQueries(3)
@@ -108,10 +103,10 @@ public class EmbeddingService {
             List<Query> expandedQueries = queryExpander.expand(compressed);
             log.info("扩展后的Query：{}", expandedQueries);
 
-            // 3. 语义向量检索 - 使用 fileid 过滤
             List<String> results = new ArrayList<>();
             Set<String> seenIds = new HashSet<>();
 
+            // 向量库的元数据过滤键叫 fileid（小写），与落库时写入的 key 必须一致
             FilterExpressionBuilder builder = new FilterExpressionBuilder();
             Filter.Expression filter = builder.eq("fileid", fileId).build();
 
