@@ -48,10 +48,19 @@ public class EmbeddingService {
 
     /**
      * 初始化向量库（向量表：vector_file_info）
+     *
+     * <p>失败不阻断启动：合库后业务表与向量表在同一个 PG 里，若 PG 暂不可用就让启动失败，
+     * 业务侧会跟着一起不可用。这里降级为"向量功能不可用"，写入与检索路径各自有守卫
+     * （见 {@link #embedAndStore} / {@link #ragRetrieve}），其余功能照常。
      */
     @PostConstruct
     public void init(){
-        vectorStore = pgVectorStoreFactory.createPgVectorStore("vector_file_info");
+        try {
+            vectorStore = pgVectorStoreFactory.createPgVectorStore("vector_file_info");
+        } catch (Exception e) {
+            vectorStore = null;
+            log.error("向量库初始化失败，向量化与 RAG 检索降级为不可用，其余功能不受影响", e);
+        }
     }
 
     public List<float[]> embed(List<Document> documents) {
@@ -62,6 +71,11 @@ public class EmbeddingService {
      * 分批写入向量库，避免单次请求过大
      */
     public void embedAndStore(List<Document> documents) {
+        if (vectorStore == null) {
+            // 调用方（FileManageService）会据此保持 embed=0，后续可重试
+            log.warn("向量库未初始化，跳过写入: documents={}", documents.size());
+            return;
+        }
         for (int i = 0; i < documents.size(); i += EMBEDDING_BATCH_SIZE) {
             List<Document> batches = documents.subList(i, Math.min(i + EMBEDDING_BATCH_SIZE, documents.size()));
             vectorStore.doAdd(batches);
@@ -81,6 +95,11 @@ public class EmbeddingService {
         if (StringUtils.isBlank(fileId) || StringUtils.isBlank(question)) {
             log.warn("RAG 检索参数为空: fileId={}, question={}", fileId, question);
             return Collections.singletonList("检索参数不能为空");
+        }
+
+        if (vectorStore == null) {
+            log.warn("向量库未初始化，RAG 检索不可用: fileId={}", fileId);
+            return Collections.singletonList("向量库未初始化，RAG 检索不可用");
         }
 
         try {

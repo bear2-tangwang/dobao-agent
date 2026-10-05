@@ -25,7 +25,6 @@
         <pdfbox.version>2.0.30</pdfbox.version>
         <poi.version>5.2.5</poi.version>
         <commons-compress.version>1.26.1</commons-compress.version>
-        <mysql.version>8.0.33</mysql.version>
         <mybatis.version>3.5.5</mybatis.version>
         <spring.ai.alibaba.version>1.1.2.0</spring.ai.alibaba.version>
         <spring.ai.version>1.1.0</spring.ai.version>
@@ -88,7 +87,7 @@
         </dependency>
 
         <!--
-          登录态落 MySQL（SPRING_SESSION 表）而不是内存：
+          登录态落 PG（SPRING_SESSION 表）而不是内存：
           后端重启不掉登录、多实例可共享。版本由 spring-boot-starter-parent 管理。
         -->
         <dependency>
@@ -108,11 +107,11 @@
             </exclusions>
         </dependency>
 
-        <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
-            <version>${mysql.version}</version>
-        </dependency>
+        <!--
+          MySQL 驱动已移除：业务库与向量库合并为同一个 PostgreSQL（dobao-vector），
+          PG 驱动由 spring-ai-starter-vector-store-pgvector 传递引入（42.7.7）。
+          mysql57 容器按运维要求保留作回滚备份，但应用不再连接它。
+        -->
 
         <dependency>
             <groupId>com.baomidou</groupId>

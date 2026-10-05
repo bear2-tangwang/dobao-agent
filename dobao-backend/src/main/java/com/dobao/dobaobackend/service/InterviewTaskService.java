@@ -33,6 +33,7 @@ import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -40,7 +41,9 @@ import java.util.List;
  * 轮询交给 {@code @Scheduled} 扫描转写中的记录（不占线程池，重启后可续跑，顺带做超时兜底）。
  *
  * <p>状态流转一律走 {@link #updateStatus}：列级更新，SET 子句不含 {@code update_time}，
- * 由 MySQL 的 {@code ON UPDATE CURRENT_TIMESTAMP} 维护；改成 updateById 会把旧值写回并压制它。
+ * 由 PG 的 {@code BEFORE UPDATE} 触发器维护（见 {@code sql/pg/03_update_triggers.sql}，
+ * 迁移前是 MySQL 的 {@code ON UPDATE CURRENT_TIMESTAMP}）；改成 updateById 会把旧值
+ * 写回并压制它。
  */
 @Slf4j
 @Service
@@ -113,8 +116,12 @@ public class InterviewTaskService {
     /**
      * 定时轮询转写中的任务，并做超时兜底。
      *
-     * <p>超时比较必须交给 SQL：MySQL 时间是 UTC、比 JDK 早 8 小时，在 Java 里拿 {@code update_time}
-     * 与 {@code LocalDateTime.now()} 相减会把刚提交的任务判成"超时 8 小时"。
+     * <p>截止时间点在 Java 侧算出后再作为参数交给 SQL 比较（见 {@link #queryTranscribing}）。
+     * 这里原本写的是 MySQL 专有的 {@code DATE_SUB(NOW(), INTERVAL n SECOND)}，且旧注释
+     * 认为"MySQL 时间是 UTC、比 JDK 早 8 小时"，所以不敢在 Java 里比时间 —— 实测两侧
+     * 容器时区虽都是 UTC，但 JDBC 会话时区（MySQL 的 {@code serverTimezone=GMT+8}、
+     * pgjdbc 下发的 JVM 时区）让应用写入的两侧时间都是 GMT+8，与
+     * {@code LocalDateTime.now()} 同源，Java 侧算时间点是安全的。
      */
     @Scheduled(fixedDelayString = "${interview.asr.poll-interval-ms:5000}")
     public void pollTranscribingTasks() {
@@ -146,19 +153,21 @@ public class InterviewTaskService {
 
     /**
      * 查询"转写中且已提交任务"的记录；超时比较用 {@code update_time}（为空时回退 {@code create_time}），
-     * 秒数以 {@code {0}} 占位符传参，不把时间值拼进 SQL。
+     * 截止时间点在 Java 侧算好后以 {@code {0}} 占位符传参。
+     *
+     * <p>为什么不在 SQL 里写 {@code NOW() - INTERVAL n SECOND}：那是 MySQL 专有语法，
+     * PG 不认；且把函数包在列上会让 {@code idx_user_time} 索引失效，参数化比较才能吃到索引。
      *
      * @param timedOut  true=取已超时的（兜底置 FAILED）；false=取尚未超时的（继续轮询）
      * @param timeoutMs 超时上限（毫秒）
      */
     private List<AiInterview> queryTranscribing(boolean timedOut, long timeoutMs) {
-        long timeoutSeconds = Duration.ofMillis(timeoutMs).toSeconds();
+        LocalDateTime deadline = LocalDateTime.now().minus(Duration.ofMillis(timeoutMs));
         String compare = timedOut ? "<" : ">=";
         return interviewMapper.selectList(new LambdaQueryWrapper<AiInterview>()
                 .eq(AiInterview::getStatus, InterviewStatus.TRANSCRIBING.name())
                 .isNotNull(AiInterview::getAsrTaskId)
-                .apply("COALESCE(update_time, create_time) " + compare
-                        + " DATE_SUB(NOW(), INTERVAL {0} SECOND)", timeoutSeconds));
+                .apply("COALESCE(update_time, create_time) " + compare + " {0}", deadline));
     }
 
     private void pollOne(AiInterview task) {
@@ -188,7 +197,7 @@ public class InterviewTaskService {
     private void persistTranscript(AiInterview task, String asrJson) {
         String interviewId = task.getInterviewId();
 
-        // transcript_json 是 MySQL JSON 列，非法 JSON 会让 SQL 抛异常
+        // transcript_json 是 json 列，非法 JSON 会让 SQL 抛异常
         try {
             objectMapper.readTree(asrJson);
         } catch (Exception e) {

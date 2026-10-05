@@ -85,7 +85,7 @@ public class InterviewProperties {
         private String model;
 
         /**
-         * 报告归纳调用的随机种子，配合低温保证"同一输入同一输出"。
+         * 报告归纳调用的随机种子，配合低温保证"同一输入同一输出"。类似与llm 的 temperature。
          */
         private Integer seed = 42;
 

@@ -111,8 +111,6 @@ public class InterviewSessionRecorder {
                 .eq(AiSession::getAgentType, AGENT_TYPE)
                 .eq(AiSession::getFileid, interviewId)
                 .set(AiSession::getAnswer, answer)
-                // update_time 必须显式写：省掉这行会落到 MySQL 的 ON UPDATE CURRENT_TIMESTAMP
-                //（UTC，比 JVM 时钟早 8 小时），把会话行排到 chat 行后面
                 .set(AiSession::getUpdateTime, LocalDateTime.now()));
         if (updated) {
             log.info("面试会话摘要已回填: interviewId={}, answer={}", interviewId, answer);

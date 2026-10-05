@@ -32,19 +32,25 @@ spring:
         api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
         options:
           model: qwen3.7-text-embedding
-          dimmension: 1024
+          dimensions: 1024
 
   datasource:
-    url: jdbc:mysql://127.0.0.1:3306/dobao?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8
-    username: root
-    password: 123456
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 业务数据 + 向量数据同库（dobao-vector），全应用只有这一个数据源。
+    url: jdbc:postgresql://localhost:5433/dobao-vector?stringtype=unspecified
+    username: pgvector
+    password: 123321
+    driver-class-name: org.postgresql.Driver
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
       idle-timeout: 60000
       connection-timeout: 30000
       max-lifetime: 1800000
+
+  autoconfigure:
+    # 关掉 spring-ai pgvector starter 自动装配的第二个 VectorStore Bean。
+    # 本项目的向量读写入口是 DynamicPgVectorStoreFactory（表 vector_file_info），
+    exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
 
   mybatis-plus:
     mapper-locations: classpath:mapper/*.xml
@@ -54,12 +60,10 @@ spring:
       max-file-size: 80MB
       max-request-size: 80MB
 
-  # 登录态落 MySQL（SPRING_SESSION 表），后端重启不掉登录
+  # 登录态落 PG（SPRING_SESSION 表），后端重启不掉登录
   session:
     store-type: jdbc
     jdbc:
-      # 默认值 embedded 只对内嵌库自动建表；本项目的库是 MySQL，用默认值首个请求就会报
-      # Table 'dobao.SPRING_SESSION' doesn't exist。生产改成 never 并手工执行建表脚本。
       initialize-schema: always
       table-name: SPRING_SESSION
 
@@ -81,10 +85,9 @@ interview:
     # 不写成裸 ${DASHSCOPE_API_KEY}：占位符无法解析会让整个应用启动失败
     api-key: ${DASHSCOPE_API_KEY:${spring.ai.openai.api-key}}
     model: qwen-audio-3.1-asr-flash-filetrans
-    # 轮询间隔（毫秒），由 InterviewTaskService#pollTranscribingTasks 的 @Scheduled 读取
+    # 轮询间隔（毫秒）
     poll-interval-ms: 5000
-    # 30 分钟兜底超时。轮询不占用 interviewExecutor 线程，由 @Scheduled 扫描
-    # status=TRANSCRIBING 的记录驱动（见 config/AsyncConfig.java）
+    # 30 分钟兜底超时
     poll-timeout-ms: 1800000
     # true=dev 走百炼临时文件上传（本地无需公网域名）；false=prod 走 MinIO 公网地址。
     # 这是 dev/prod 的唯一切换开关，两个 profile 配置文件目前为空。
@@ -92,28 +95,14 @@ interview:
     max-audio-bytes: 83886080        # 80MB，与 spring.servlet.multipart.max-file-size 对齐
     max-audio-duration-ms: 5400000   # 1.5 小时（模型支持 12 小时，这是产品侧约束）
   report:
-    # 问答清单由转写句子直接格式化（QaListBuilder，零 LLM），本配置块只服务于
-    # 「技术问题的参考回答 + 面试总结」那一次归纳调用。
     # 固定种子，配合低温保证同一份问答清单产出同一份知识点
     seed: 42
-    # 透传给归纳请求体的厂商扩展参数。enable_thinking=false 关掉推理模型的思考，
-    # 实测同一 prompt 下 completion 从 8064 token 降到 5075、耗时从 >150s 降到约 120s。
-    # 参数名因服务商而异；写错通常表现为请求被拒，删掉这项即可恢复。
     extra-body:
-      enable_thinking: false
-    # extra-body 里真正下发到归纳调用的键。不加白名单的话"关思考"会顺带
-    # 应用到对话 / PPT 那条链路（它们共用同一个 ChatModel）。
+      enable_thinking: false # 在报告归纳调用里关掉推理模型的思考
     extra-body-keys:
-      - enable_thinking
-    # 归纳专用模型（留空=沿用全局 spring.ai.openai.chat.options.model）。
-    # 归纳是信息抽取任务，换更快的非推理模型可以省掉"思考" token。
-    # model: qwen-plus
-  # 实时进度流（SSE，GET /interview/{id}/stream）。
-  # 心跳间隔同样由 InterviewProgressHub#heartbeat 的 @Scheduled 读取：转写阶段可能
-  # 几分钟没有状态跳变，靠 ": ping" 注释帧保住长连接（前端忽略注释行；流断了会自动
-  # 降级为轮询，两条通道共用同一份状态）
+      - enable_thinking # 只应用到报告归纳调用上的键
   stream:
-    heartbeat-ms: 15000
+    heartbeat-ms: 15000 # stream 心跳间隔（毫秒）
 
 # Qwen 文生图（ImageGenerationService 使用）
 qwen:
@@ -122,17 +111,11 @@ qwen:
     api-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
     model: qwen-image-3.0
 
-embeddings:
-  store:
-    host: localhost
-    port: 5433
-    database: dobao-vector
-    user: pgvector
-    password: 123321
+
 
 # Tavily
 tavily:
-  api-key: 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
+  api-key: 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
   mcp-url: https://mcp.tavily.com/mcp/
 
 logging:
