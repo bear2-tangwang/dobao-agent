@@ -45,6 +45,7 @@ onMounted(async () => {
 
 <style scoped>
 .callback-page {
+  width: 100%;
   min-height: 100vh;
   display: flex;
   align-items: center;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { Chat } from '@/types'
+import BrandMark from '@/components/BrandMark.vue'
 
 defineProps<{
   chatList: Chat[]
@@ -28,8 +29,8 @@ const avatarBroken = ref(false)
   <div class="sidebar">
     <div class="sidebar-header">
       <div class="app-title">
-        <span class="logo-icon">🌱</span>
-        <span class="title-text">豆豆</span>
+        <BrandMark class="logo-icon" />
+        <span class="title-text">通用智能体平台</span>
       </div>
       <button class="new-chat-btn" @click="$emit('create-new-chat')">
         <i class="fas fa-plus"></i>
@@ -77,9 +78,6 @@ const avatarBroken = ref(false)
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border-color);
 }
 
 .user-avatar {
@@ -95,7 +93,7 @@ const avatarBroken = ref(false)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--primary-color);
+  background: #3a3a3a;
   color: #fff;
   font-size: 14px;
   font-weight: 600;

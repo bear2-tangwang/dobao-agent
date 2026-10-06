@@ -94,11 +94,6 @@ const handleLogout = async () => {
 
     <!-- 右侧聊天区域 -->
     <div class="main-content">
-      <!-- 顶部装饰 -->
-      <div class="top-decoration">
-        <div class="decoration-line"></div>
-      </div>
-
       <!-- 消息列表 -->
       <div class="messages-container" ref="messagesContainer">
         <EmptyState v-if="currentChat && currentChat.messages.length === 0" @quick-prompt="handleQuickPrompt" />

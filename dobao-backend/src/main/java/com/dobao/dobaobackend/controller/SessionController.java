@@ -140,20 +140,7 @@ public class SessionController {
                 pageNum, pageSize, agentType, userId);
 
         try {
-            /*
-             * 去重语义：每个 session_id 只保留"当前用户（可选地再加 agentType）范围内 id 最大"的那一行。
-             *
-             * ⚠️ 用户条件必须写在子查询内部：写在外层会让所有用户的行一起参与去重，
-             * 别人先占用了同一个 session_id 时自己那行会被 MAX 淘汰、整个会话消失。
-             *
-             * ⚠️ 不能改回 `.in(AiSession::getId, wrapper)`：MyBatis-Plus 的 `in` 只有
-             * (列, Collection) 与 (列, Object...) 两个重载，传 Wrapper 会命中后者、被当成一个
-             * 普通绑定值，生成 `id IN (?)` —— 子查询根本没进 SQL，MySQL 拿对象字符串比 bigint，
-             * 不报错但静默返回 0 行。
-             *
-             * 这里用 apply + {0}/{1} 占位符：子查询真的进 SQL，用户ID/agentType 仍是参数绑定
-             *（不是字符串拼接），不存在注入面。
-             */
+
             boolean hasAgentType = StringUtils.hasText(agentType);
             String dedupeSql = "id = (SELECT MAX(s2.id) FROM " + SESSION_TABLE + " s2"
                     + " WHERE s2.session_id = " + SESSION_TABLE + ".session_id"

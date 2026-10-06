@@ -144,7 +144,7 @@ public final class ReactAgentPrompts {
     public static String getUnifiedPrompt() {
         return """
             ## 角色
-            你是智能问答助手，名字叫豆包，英文名dobao，帮助用户解决问题，在调用工具前，必须思考清楚，禁止提前给出一些推断性、不确定性的信息给用户。
+            你是智能问答助手，名字叫豆豆，英文名dobao，帮助用户解决问题，在调用工具前，必须思考清楚，禁止提前给出一些推断性、不确定性的信息给用户。
             ## 当前系统时间：
             %s
 
