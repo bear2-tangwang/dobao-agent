@@ -41,6 +41,7 @@ const {
   deleteChat,
   removeFile,
   handleFileSelect,
+  handleFiles,
   sendMessage,
   stopMessage,
   toggleThinking,
@@ -67,6 +68,44 @@ const {
 
 const inputAreaRef = ref<InstanceType<typeof InputArea> | null>(null)
 
+// ===== 拖拽上传：热区为右侧整个区域（不含左侧会话列表）=====
+const isDragOver = ref(false)
+let dragDepth = 0
+
+const onDragEnter = (e: DragEvent) => {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  dragDepth++
+  isDragOver.value = true
+}
+
+const onDragLeave = (e: DragEvent) => {
+  // relatedTarget 为 null 表示拖出了窗口，直接复位
+  if (e.relatedTarget === null) {
+    dragDepth = 0
+    isDragOver.value = false
+    return
+  }
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) isDragOver.value = false
+}
+
+const onDragOver = (e: DragEvent) => {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  // 必须 prevent，否则浏览器会直接打开文件而非触发 drop
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+const onDrop = (e: DragEvent) => {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  e.preventDefault()
+  dragDepth = 0
+  isDragOver.value = false
+  if (e.dataTransfer.files.length > 0) {
+    handleFiles(e.dataTransfer.files)
+  }
+}
+
 // 快捷提问后聚焦输入框
 const handleQuickPrompt = (prompt: string) => {
   quickPrompt(prompt)
@@ -92,8 +131,23 @@ const handleLogout = async () => {
       @logout="handleLogout"
     />
 
-    <!-- 右侧聊天区域 -->
-    <div class="main-content">
+    <!-- 右侧聊天区域：整个区域可作为拖拽上传热区 -->
+    <div
+      class="main-content"
+      :class="{ 'drag-over': isDragOver }"
+      @dragenter="onDragEnter"
+      @dragleave="onDragLeave"
+      @dragover="onDragOver"
+      @drop="onDrop"
+    >
+      <!-- 全域拖拽提示 -->
+      <div v-if="isDragOver" class="drop-overlay">
+        <div class="drop-hint">
+          <i class="fa-solid fa-cloud-arrow-up"></i>
+          <span>松开以上传文件</span>
+        </div>
+      </div>
+
       <!-- 消息列表 -->
       <div class="messages-container" ref="messagesContainer">
         <EmptyState v-if="currentChat && currentChat.messages.length === 0" @quick-prompt="handleQuickPrompt" />

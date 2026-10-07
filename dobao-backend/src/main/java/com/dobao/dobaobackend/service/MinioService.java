@@ -22,8 +22,11 @@ public class MinioService {
     @Value("${minio.bucketName}")
     private String bucketName;
 
-    @Value("${minio.endpoint}")
-    private String endpoint; //Minio 服务端地址
+/*    @Value("${minio.endpoint}")
+    private String endpoint; //Minio 服务端地址*/
+
+    @Value("${minio.url}")
+    private String endpoint; //Minio 对外访问地址前缀
 
     /**
      * 桶初始化标记（桶已存在 + 公共读策略已生效）。

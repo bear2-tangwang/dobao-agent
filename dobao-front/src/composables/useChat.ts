@@ -282,27 +282,34 @@ export function useChat() {
   }
 
   // ===== 文件处理 =====
+  /**
+   * 分流入口：按钮选择与拖拽 drop 共用。
+   * 多文件只取第一个（与"限1个"一致），返回是否接受。
+   */
+  const handleFiles = async (files: FileList | null | undefined): Promise<boolean> => {
+    if (!files || files.length === 0) return false
+    const file = files[0]!
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+    // 音频一律走面试链路：即使用户没切到"面试总结"，传录音的意图也是明确的
+    if (AUDIO_EXTENSIONS.includes(ext)) {
+      selectedAgent.value = 'interview'
+      const chat = currentChat.value
+      if (chat) {
+        handleInterviewFile(file, chat)
+      }
+    } else if (selectedAgent.value === 'interview') {
+      alert(`面试总结只接受音频文件（${AUDIO_EXTENSIONS.join(' / ')}），当前文件：.${ext || '未知'}`)
+    } else if (selectedFile.value) {
+      alert('已上传文件，请先删除当前文件再上传新文件（限1个）')
+    } else {
+      await handleFile(file)
+    }
+    return true
+  }
+
   const handleFileSelect = async (event: Event) => {
     const input = event.target as HTMLInputElement
-    const files = input.files
-    if (files && files.length > 0) {
-      const file = files[0]!
-      const ext = file.name.split('.').pop()?.toLowerCase() || ''
-      // 音频一律走面试链路：即使用户没切到"面试总结"，传录音的意图也是明确的
-      if (AUDIO_EXTENSIONS.includes(ext)) {
-        selectedAgent.value = 'interview'
-        const chat = currentChat.value
-        if (chat) {
-          handleInterviewFile(file, chat)
-        }
-      } else if (selectedAgent.value === 'interview') {
-        alert(`面试总结只接受音频文件（${AUDIO_EXTENSIONS.join(' / ')}），当前文件：.${ext || '未知'}`)
-      } else if (selectedFile.value) {
-        alert('已上传文件，请先删除当前文件再上传新文件（限1个）')
-      } else {
-        await handleFile(file)
-      }
-    }
+    await handleFiles(input.files)
     input.value = ''
   }
 
@@ -990,6 +997,7 @@ export function useChat() {
     deleteChat,
     removeFile,
     handleFileSelect,
+    handleFiles,
     sendMessage,
     stopMessage,
     toggleThinking,
