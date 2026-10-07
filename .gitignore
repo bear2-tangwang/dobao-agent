@@ -1,2 +1,13 @@
 /.idea/
 /awesome-design-md/
+
+# ==================== 部署相关 ====================
+# 生产密钥（由 .env.example 复制而来），绝不能进版本库
+.env
+
+# 前端构建产物：部署时本地构建后拷进来，不入库
+/deploy/dist/
+
+# 部署期数据与证书
+/deploy/data/
+/deploy/certs/

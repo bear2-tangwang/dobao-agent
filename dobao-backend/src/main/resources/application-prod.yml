@@ -1,0 +1,222 @@
+# ============================================================================
+# 生产环境配置（profile: prod）
+#
+# 设计原则：
+#   1. application.yml 里所有硬编码的密钥/地址在本文件里被【覆盖】为环境变量占位符。
+#      Spring Boot 的 profile 配置优先级高于 application.yml，因此这里的键一定生效。
+#   2. 占位符一律写成显式形式 ${ENV_NAME}（而不是依赖 Spring 的宽松绑定去猜名字），
+#      这样"环境变量名 ↔ 配置项"是一一对应的，不会出现 MINIO_BUCKET_NAME 这种
+#      看起来对、实际绑不上的名字（宽松绑定规则是"去掉短横线"，对应 MINIO_BUCKETNAME）。
+#   3. 密钥类变量刻意【不给默认值】：缺失时启动直接失败，好过悄悄用了一个弱默认值。
+#
+# 全部变量的说明与示例值见仓库根目录 .env.example 与 docs/项目部署文档.md
+# ============================================================================
+
+server:
+  port: ${SERVER_PORT:8888}
+
+  # 部署在 nginx 之后：让 Spring 按 X-Forwarded-Proto / X-Forwarded-Host 还原真实
+  # 协议与主机名。不设置的话，secure Cookie 的判定和绝对 URL 拼接都会按 http 处理。
+  forward-headers-strategy: framework
+
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+      enabled: true
+    session:
+      # 登录态保留 30 天
+      timeout: 30d
+      cookie:
+        # Spring Session 的 DefaultCookieSerializer 会继承下面这几项
+        name: DOBAO_SID
+        http-only: true
+        same-site: lax
+        # ⚠️ 这个开关必须与你的实际访问协议一致，否则表现为
+        #    "GitHub 授权成功后跳回来仍是未登录"：
+        #      走 HTTPS（有域名+证书）→ true
+        #      纯 IP + HTTP 部署       → false（浏览器不会回传 Secure Cookie）
+        secure: ${SESSION_COOKIE_SECURE:false}
+
+  tomcat:
+    threads:
+      # 默认 200。演示场景并发很低，收窄到 100 可以少占线程栈内存。
+      max: ${TOMCAT_MAX_THREADS:100}
+    accept-count: 100
+    # 单个 80MB 录音上传 + 后续 ASR 轮询可能很慢，连接超时放宽
+    connection-timeout: 120000
+
+  # SSE 长连接的异步超时。前端有轮询兜底，这里放宽只是减少无谓的重连。
+  # 1800000 = 30 分钟，与 interview.asr.poll-timeout-ms 对齐。
+  mvc:
+    async:
+      request-timeout: ${SSE_ASYNC_TIMEOUT_MS:1800000}
+
+spring:
+  ai:
+    openai:
+      # 百炼（DashScope）API Key。对话 / 向量化 / 文生图 / ASR 共用同一个账号，
+      # 因此这里只维护一个 DASHSCOPE_API_KEY。
+      api-key: ${DASHSCOPE_API_KEY}
+      # 默认值 = 开发环境实测可用的工作空间地址（模型名与工作空间绑定）。
+      # 若要切公共百炼，改成 https://dashscope.aliyuncs.com/compatible-mode/
+      # 并把下面的模型名一起换成 qwen-plus / text-embedding-v3，否则会报模型不存在。
+      base-url: ${DASHSCOPE_BASE_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/}
+
+      chat:
+        options:
+          model: ${CHAT_MODEL:qwen3.7-flash-2026-07-15}
+          temperature: 0.7
+          maxTokens: 10000
+
+      embedding:
+        base-url: ${DASHSCOPE_BASE_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/}
+        api-key: ${DASHSCOPE_API_KEY}
+        options:
+          model: ${EMBEDDING_MODEL:qwen3.7-text-embedding}
+          # ⚠️ 必须与向量表 vector_file_info 的 vector(1024) 一致，改了要重建向量表
+          dimensions: ${EMBEDDING_DIMENSIONS:1024}
+
+  datasource:
+    # 业务数据 + 向量数据同库（dobao-vector），全应用只有这一个数据源。
+    # 容器内走 compose 服务名 postgres（不是宿主机映射的 5433）。
+    url: jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${POSTGRES_DB:dobao-vector}?stringtype=unspecified
+    username: ${POSTGRES_USER:pgvector}
+    password: ${POSTGRES_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      idle-timeout: 60000
+      connection-timeout: 30000
+      max-lifetime: 1800000
+
+  autoconfigure:
+    # 关掉 spring-ai pgvector starter 自动装配的第二个 VectorStore Bean。
+    # 本项目的向量读写入口是 DynamicPgVectorStoreFactory（表 vector_file_info）。
+    exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
+  mybatis-plus:
+    mapper-locations: classpath:mapper/*.xml
+
+  servlet:
+    multipart:
+      enabled: true
+      # 与 interview.asr.max-audio-bytes 对齐；nginx 的 client_max_body_size 必须 >= 这个值
+      max-file-size: ${MAX_FILE_SIZE:80MB}
+      max-request-size: ${MAX_REQUEST_SIZE:80MB}
+
+  # 登录态落 PG（SPRING_SESSION 表），后端重启不掉登录
+  session:
+    store-type: jdbc
+    jdbc:
+      # always：启动时执行 spring-session 自带的建表脚本，表已存在时由框架内部容错。
+      # 单实例演示场景保持 always 可以省掉一类"表不存在"的故障；
+      # schema 稳定后可改成 never（见部署文档"上线加固"一节）。
+      initialize-schema: ${SESSION_INIT_SCHEMA:always}
+      table-name: SPRING_SESSION
+
+# ==================== MinIO 对象存储 ====================
+#
+# ⚠️ 这是本项目部署时最容易配错的一处，先看清两个键各自的用途：
+#
+#   endpoint        MinioClientConfiguration 用它建 SDK 客户端 —— 后端上传/下载对象走这个地址
+#                   【只要求容器内后端能连通】
+#
+#   url             MinioService 拼"返回给前端的文件 URL"时用的前缀
+#                   【必须是浏览器能打开的地址】
+#
+#   public-base-url MinioPublicUrlProvider 给百炼生成音频地址时用的前缀
+#                   【必须是公网可达地址】
+#
+# 注意：MinioService 当前实现用的是 endpoint 而不是 url（url 这个键在 yml 里存在但代码没用）。
+# 因此有两种部署方案，见 docs/项目部署文档.md「MinIO 地址方案」一节：
+#
+#   方案 A（推荐）：给 MinioService 打 2 行补丁，让"返回前端的 URL"改用 url。
+#                  于是 endpoint=容器内网、url=公网，各自独立，不需要域名、不依赖 NAT 回环。
+#   方案 B（不改代码）：把 endpoint 也设成公网地址 —— 那么公网地址必须能被
+#                  容器内后端访问到（需要域名 + 容器内可解析，或宿主 NAT 回环可用）。
+#
+# 两种方案的 .env 填法不同，详见 .env.example 的注释。
+minio:
+  endpoint: ${MINIO_ENDPOINT}
+  url: ${MINIO_PUBLIC_URL}
+  access-key: ${MINIO_ACCESS_KEY}
+  secret-key: ${MINIO_SECRET_KEY}
+  bucketName: ${MINIO_BUCKET_NAME:dobao-agent}
+  public-base-url: ${MINIO_PUBLIC_URL}
+
+# ==================== 面试总结（录音转写 + 报告）====================
+interview:
+  asr:
+    # 必须带 /api/v1，否则 /uploads、/services/audio/asr/transcription、/tasks/{id} 全部 404
+    # 默认值同 chat：工作空间地址，切公共百炼改成 https://dashscope.aliyuncs.com/api/v1
+    base-url: ${DASHSCOPE_ASR_BASE_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1}
+    api-key: ${DASHSCOPE_API_KEY}
+    model: ${ASR_MODEL:qwen-audio-3.1-asr-flash-filetrans}
+    # 轮询间隔（毫秒）
+    poll-interval-ms: 5000
+    # 30 分钟兜底超时
+    poll-timeout-ms: 1800000
+    # ⚠️ 生产必须 false：dev 的临时文件上传走百炼临时存储（48 小时时效 + 100 QPS 限制，
+    #    官方声明"请勿用于生产环境"）。false = 走 MinIO 公网地址（MinioPublicUrlProvider）。
+    #    改成 false 的前提是 MINIO_PUBLIC_URL 是公网可达地址。
+    temp-upload-enabled: false
+    max-audio-bytes: 83886080        # 80MB，与 spring.servlet.multipart.max-file-size 对齐
+    max-audio-duration-ms: 5400000   # 1.5 小时（模型支持 12 小时，这是产品侧约束）
+  report:
+    # 固定种子，配合低温保证同一份问答清单产出同一份知识点
+    seed: 42
+    extra-body:
+      enable_thinking: false
+    extra-body-keys:
+      - enable_thinking
+  stream:
+    heartbeat-ms: 15000 # stream 心跳间隔（毫秒）
+
+# ==================== Qwen 文生图（ImageGenerationService 使用）====================
+qwen:
+  image:
+    # 默认值同样是工作空间地址；切公共百炼改成
+    # https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+    api-url: ${QWEN_IMAGE_API_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation}
+    model: ${QWEN_IMAGE_MODEL:qwen-image-3.0}
+
+# ==================== Tavily 联网搜索（MCP）====================
+tavily:
+  api-key: ${TAVILY_API_KEY}
+  mcp-url: ${TAVILY_MCP_URL:https://mcp.tavily.com/mcp/}
+
+# ==================== GitHub OAuth 登录 ====================
+# ⚠️ 会话 Cookie 按主机名隔离，端口不影响。下面两个地址的主机名必须与
+#   「浏览器里访问前端的地址」完全一致（redirect-uri 是 GitHub 回跳地址，
+#   frontend-base-url 是授权后浏览器的落点），并同时与 GitHub OAuth App 里登记的
+#   callback URL 一致。混用 IP 与域名会让 authorize 写入的 state 落在另一个站点，
+#   回跳时带不上 Cookie，用户只会看到 ?error=state（"登录状态已过期"）。
+github:
+  oauth:
+    client-id: ${GITHUB_CLIENT_ID}
+    client-secret: ${GITHUB_CLIENT_SECRET}
+    # 访问 github.com 的 HTTP CONNECT 代理。
+    # ⚠️ 云服务器上没有本地代理，这里必须为空，否则 GitHub 登录会连接超时。
+    proxy-host: ${GITHUB_PROXY_HOST:}
+    proxy-port: ${GITHUB_PROXY_PORT:}
+    redirect-uri: ${GITHUB_REDIRECT_URI}
+    # 登录成功后浏览器要落回的前端地址（授权失败时也用它提示）
+    frontend-base-url: ${FRONTEND_BASE_URL}
+    # 未登录时业务数据归属的兜底用户，与三张表 user_id 列的 DEFAULT 'default' 对齐
+    default-user-id: default
+    # 登录态在 Session 里占用的键名
+    session-user-key: DOBAO_UID
+    # GET /auth/diagnostics —— 会暴露会话 id，生产必须 false（development 调试时才开）
+    diagnostics-enabled: ${AUTH_DIAGNOSTICS_ENABLED:false}
+
+logging:
+  level:
+    root: INFO
+    org:
+      springframework:
+        ai: INFO
+    io:
+      modelcontextprotocol:
+        client: ERROR

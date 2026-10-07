@@ -4,6 +4,7 @@ package com.dobao.dobaobackend.agent.deeppresearch;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.dobao.dobaobackend.agent.BaseAgent;
+import com.dobao.dobaobackend.common.AgentResponse;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.*;
 import com.dobao.dobaobackend.entity.vo.OverAllState;
@@ -544,7 +545,7 @@ public class PlanExecuteAgent extends BaseAgent {
         if (finished.get()) {
             return;
         }
-        sink.tryEmitNext(createResponse(content, type));
+        sink.tryEmitNext(createResponse(trimBlankTail(content, type), type));
     }
 
     /**
@@ -559,7 +560,26 @@ public class PlanExecuteAgent extends BaseAgent {
         if (finished.get()) {
             return;
         }
-        sink.tryEmitNext(createResponse(content, type));
+        sink.tryEmitNext(createResponse(trimBlankTail(content, type), type));
+    }
+
+    /**
+     * 收掉 thinking 文案结尾多余的换行，只留一个。
+     *
+     * <p>本类里不少状态行以 {@code "\n✅ …\n\n"} 这种形式发出（例如第 451、620、629、1117 行）。
+     * 前端把整段思考文本按 Markdown 渲染，结尾的双换行会被解析成"空行"，而空行会把后面的
+     * 行拆成独立段落，甚至让编号列表变成 loose list —— 于是每条状态之间都被撑出一大段空白。
+     * 这里统一压到单个换行：状态行仍然另起一行，但不再额外多出一个空行。
+     *
+     * <p>只处理结尾，保留开头的换行（那是用来把状态行与上一段模型输出分开的）。
+     * 正文（text）不动，避免影响最终回答的段落结构。
+     */
+    private String trimBlankTail(String content, String type) {
+        if (content == null || !AgentResponse.TYPE_THINKING.equals(type)) {
+            return content;
+        }
+        String trimmed = content.replaceFirst("[\\r\\n]+$", "");
+        return trimmed.isEmpty() ? content : trimmed;
     }
 
     private void complete(Sinks.Many<String> sink,

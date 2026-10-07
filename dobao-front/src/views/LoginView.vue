@@ -10,6 +10,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ghostCursor, type CursorEffectResult } from 'cursor-effects'
 import type { AuthConfig } from '@/api/auth'
 import { authBase } from '@/config'
 import { useAuth } from '@/stores/auth'
@@ -41,6 +42,7 @@ const redirectTarget = computed(() => {
 })
 
 let wave: WaveHandle | null = null
+let cursorTrail: CursorEffectResult | null = null
 
 /** 从 URL 里取主机名；解析失败返回 null（该项跳过校验） */
 const hostOf = (url: string | null | undefined): string | null => {
@@ -97,6 +99,19 @@ onMounted(async () => {
     wave = createWave(heroCanvas.value)
   }
 
+  // 光标残影拖尾：只在精确指针（鼠标）设备上开；触屏没有 hover，
+  // reduced-motion 库内部会自己检测并跳过初始化
+  if (window.matchMedia('(pointer: fine)').matches) {
+    cursorTrail = ghostCursor()
+    // npm 1.0.18 的构建不含 zIndex 支持（本地 dist 里没有该代码），canvas 默认
+    // z-index:auto 会被本页 z-index:1 的 .intro/.side 压住。它的 canvas 固定
+    // append 到 body 末尾，这里补一个高层级；pointer-events:none 不影响交互
+    const trailCanvas = document.body.lastElementChild
+    if (trailCanvas instanceof HTMLCanvasElement) {
+      trailCanvas.style.zIndex = '2147483647'
+    }
+  }
+
   // 回跳失败时后端会带 ?error=xxx 过来（见 stores/auth 的错误映射表）
   const raw = route.query.error
   errorFromQuery.value = auth.messageForError(Array.isArray(raw) ? raw[0] : raw)
@@ -126,6 +141,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   wave?.destroy()
+  cursorTrail?.destroy()
+  cursorTrail = null
 })
 
 const handleLogin = (): void => {

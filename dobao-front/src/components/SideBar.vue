@@ -30,7 +30,7 @@ const avatarBroken = ref(false)
     <div class="sidebar-header">
       <div class="app-title">
         <BrandMark class="logo-icon" />
-        <span class="title-text">通用智能体平台</span>
+        <span class="title-text">豆本豆</span>
       </div>
       <button class="new-chat-btn" @click="$emit('create-new-chat')">
         <i class="fas fa-plus"></i>

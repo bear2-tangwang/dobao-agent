@@ -396,8 +396,28 @@ body {
     font-size: 13px;
     color: var(--text-secondary);
     line-height: 1.8;
-    white-space: pre-wrap;
+    /* 这里渲染的是 renderMarkdown() 产出的 HTML，换行交给 markdown 的 <br>/块级标签处理。
+       留 pre-wrap 会把 HTML 源码里的换行与缩进当成硬换行，每个块之间凭空多出一整行空白 */
+    white-space: normal;
     word-wrap: break-word;
+}
+
+/* 首尾块去掉外边距：折叠面板上下不再多出一截空白 */
+.thinking-text > :first-child {
+    margin-top: 0;
+}
+
+.thinking-text > :last-child {
+    margin-bottom: 0;
+}
+
+/* loose list（空行分隔的列表）：<li> 内的 <p> 不再额外撑高条目间距 */
+.thinking-text li > p:first-child {
+    margin-top: 0;
+}
+
+.thinking-text li > p:last-child {
+    margin-bottom: 0;
 }
 
 /* 加载提示：流光文字（探索中莫着急~） */
