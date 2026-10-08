@@ -23,6 +23,15 @@ public class AiFileInfo {
     private Long id;
 
     /**
+     * 归属用户ID（db_user.user_id）。
+     *
+     * <p>注意 {@code file_id} 是全局唯一索引，但"知道 fileId 就能读内容"是越权，
+     * 因此按 fileId 查/删的接口都必须再校验这一列。
+     */
+    @TableField("user_id")
+    private String userId;
+
+    /**
      * 文件唯一标识
      */
     @TableField("file_id")

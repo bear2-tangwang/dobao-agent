@@ -15,6 +15,14 @@ import lombok.NoArgsConstructor;
 public class SaveQuestionRequest {
 
     /**
+     * 归属用户ID。
+     *
+     * <p>必须由调用方显式带上：SSE/异步链路读不到 {@code UserContext}（ThreadLocal）。
+     * 为空时 {@code AiSessionServiceImpl} 会回退到兜底用户。
+     */
+    private String userId;
+
+    /**
      * 会话ID
      */
     private String sessionId;

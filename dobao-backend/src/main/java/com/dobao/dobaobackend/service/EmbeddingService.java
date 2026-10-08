@@ -48,15 +48,21 @@ public class EmbeddingService {
 
     /**
      * 初始化向量库（向量表：vector_file_info）
+     *
+     * <p>失败不阻断启动：合库后业务表与向量表在同一个 PG 里，若 PG 暂不可用就让启动失败，
+     * 业务侧会跟着一起不可用。这里降级为"向量功能不可用"，写入与检索路径各自有守卫
+     * （见 {@link #embedAndStore} / {@link #ragRetrieve}），其余功能照常。
      */
     @PostConstruct
     public void init(){
-        vectorStore = pgVectorStoreFactory.createPgVectorStore("vector_file_info");
+        try {
+            vectorStore = pgVectorStoreFactory.createPgVectorStore("vector_file_info");
+        } catch (Exception e) {
+            vectorStore = null;
+            log.error("向量库初始化失败，向量化与 RAG 检索降级为不可用，其余功能不受影响", e);
+        }
     }
 
-    /**
-     * 批量向量化文档
-     */
     public List<float[]> embed(List<Document> documents) {
         return documents.stream().map(document -> embeddingModel.embed(document.getText())).collect(Collectors.toList());
     }
@@ -65,6 +71,11 @@ public class EmbeddingService {
      * 分批写入向量库，避免单次请求过大
      */
     public void embedAndStore(List<Document> documents) {
+        if (vectorStore == null) {
+            // 调用方（FileManageService）会据此保持 embed=0，后续可重试
+            log.warn("向量库未初始化，跳过写入: documents={}", documents.size());
+            return;
+        }
         for (int i = 0; i < documents.size(); i += EMBEDDING_BATCH_SIZE) {
             List<Document> batches = documents.subList(i, Math.min(i + EMBEDDING_BATCH_SIZE, documents.size()));
             vectorStore.doAdd(batches);
@@ -86,10 +97,14 @@ public class EmbeddingService {
             return Collections.singletonList("检索参数不能为空");
         }
 
+        if (vectorStore == null) {
+            log.warn("向量库未初始化，RAG 检索不可用: fileId={}", fileId);
+            return Collections.singletonList("向量库未初始化，RAG 检索不可用");
+        }
+
         try {
             Query query = Query.builder().text(question).build();
 
-            // 1. 问题压缩重写
             ChatClient chatClient = ChatClient.builder(chatModel).build();
             CompressionQueryTransformer queryTransformer = CompressionQueryTransformer.builder()
                     .chatClientBuilder(chatClient.mutate())
@@ -98,7 +113,6 @@ public class EmbeddingService {
             Query compressed = queryTransformer.transform(query);
             log.info("压缩重写后的Query: {}", compressed.text());
 
-            // 2. 问题扩展
             QueryExpander queryExpander = MultiQueryExpander.builder()
                     .chatClientBuilder(chatClient.mutate())
                     .numberOfQueries(3)
@@ -108,10 +122,10 @@ public class EmbeddingService {
             List<Query> expandedQueries = queryExpander.expand(compressed);
             log.info("扩展后的Query：{}", expandedQueries);
 
-            // 3. 语义向量检索 - 使用 fileid 过滤
             List<String> results = new ArrayList<>();
             Set<String> seenIds = new HashSet<>();
 
+            // 向量库的元数据过滤键叫 fileid（小写），与落库时写入的 key 必须一致
             FilterExpressionBuilder builder = new FilterExpressionBuilder();
             Filter.Expression filter = builder.eq("fileid", fileId).build();
 

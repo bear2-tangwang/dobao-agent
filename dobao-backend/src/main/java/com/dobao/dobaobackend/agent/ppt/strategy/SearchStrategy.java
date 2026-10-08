@@ -22,18 +22,16 @@ public class SearchStrategy implements PptStateStrategy {
                         StringBuilder thinkingBuffer, PptStateStrategyContext context) {
         sink.tryEmitNext(context.createThinkingResponse("正在收集相关信息...\n"));
 
-        String requirement = inst.getRequirement(); // 获取需求澄清结果
+        String requirement = inst.getRequirement();
 
-        // 构建搜索提示
         String searchPrompt = PptBuilderPrompts.getSearchInfoPrompt(requirement);
 
-        // 获取 SimpleReactAgent 并注入 tavily 搜索工具
+        // 搜索由 SimpleReactAgent 执行，工具来自策略上下文
         SimpleReactAgent agent = SimpleReactAgent.builder()
                 .chatModel(context.getChatModel())
                 .tools(context.getToolCallbacks())
                 .build();
 
-        // 流式输出搜索过程
         StringBuilder searchResultBuffer = new StringBuilder();
 
         Disposable disposable = agent.stream(searchPrompt)
@@ -44,7 +42,6 @@ public class SearchStrategy implements PptStateStrategy {
                 .doOnComplete(() -> {
                     log.info("信息收集完成，结果长度: {}", searchResultBuffer.length());
                     String searchResult = searchResultBuffer.toString();
-                    // 过滤掉工具调用标记等非内容部分
                     searchResult = cleanSearchResult(searchResult);
                     context.getPptInstService().updateSearchInfo(inst.getId(), searchResult, TARGET_STATUS);
                     sink.tryEmitNext(context.createThinkingResponse("\n✅相关信息收集完成，开始选择模板\n"));
@@ -52,16 +49,15 @@ public class SearchStrategy implements PptStateStrategy {
                 })
                 .doOnError(err -> {
                     log.error("信息收集异常", err);
-                    // 失败时不回退状态，只更新错误信息，转到 FAILED
+                    // 失败不回退状态，只记录错误信息
                     context.getPptInstService().updateError(inst.getId(),
                             "信息收集失败: " + err.getMessage(), PptInstStatus.SEARCH);
-                    // 转到 FAILED 策略
                     PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe();
 
-        // 保存 disposable 到任务管理器，用于停止任务
+        // 交给任务管理器，便于取消时中断
         context.setDisposable(inst.getConversationId(), disposable);
     }
 
@@ -78,14 +74,12 @@ public class SearchStrategy implements PptStateStrategy {
             return "";
         }
 
-        // 移除工具调用标记（如 <tool_calls> 等格式）
+        // 清掉各家工具调用标记的残留
         String cleaned = result
-                // 移除常见的工具调用标记
                 .replaceAll("<tool_calls>.*?</tool_calls>", "")
                 .replaceAll("\\[Tool Call.*?\\]", "")
                 .replaceAll("Tool call:.*?\\n", "")
                 .replaceAll("\\[TOOL_CALL\\].*?\\[\\/TOOL_CALL\\]", "")
-                // 清理多余的空行
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
 

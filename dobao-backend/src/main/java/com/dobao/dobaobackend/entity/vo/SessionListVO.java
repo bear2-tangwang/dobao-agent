@@ -46,7 +46,10 @@ public class SessionListVO {
     private java.time.LocalDateTime updateTime;
 
     /**
-     * 文件ID（关联文件或PPT）
+     * 文件ID（关联文件或PPT）。
+     *
+     * <p>按 {@code agentType} 解释的多态业务指针：{@code agentType='interview'} 时它存的是
+     * interviewId（见 {@code InterviewSessionRecorder}），不是文件表的主键。
      */
     private String fileid;
 

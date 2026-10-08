@@ -31,4 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
-/src/test/
+
+### 本地日志（mvn ... > xxx.log 会落在模块根目录） ###
+*.log
+log

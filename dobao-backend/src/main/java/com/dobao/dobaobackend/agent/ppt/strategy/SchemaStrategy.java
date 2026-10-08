@@ -44,48 +44,37 @@ public class SchemaStrategy implements PptStateStrategy {
 
         BeanOutputConverter<PptSchema> converter = new BeanOutputConverter<>(new ParameterizedTypeReference<>() {
         });
-        // 异步非流式生成内容Schema
+        // Schema 必须一次性拿到完整 JSON，所以走非流式调用
         Disposable disposable = Mono.fromCallable(() -> {
-                     // 获取Schema JSON 字符串内容
                     String json = context.getChatModel().call(new Prompt(prompt)).getResult().getOutput().getText();
                     PptSchema pptSchema = converter.convert(json);
                     String pptSchemaJson = JSON.toJSONString(pptSchema);
 
-                    // 更新Schema状态为RENDER
                     context.getPptInstService().updatePptSchema(inst.getId(), pptSchemaJson, TARGET_STATUS);
 
-                    // 处理图片生成
                     processImageGeneration(pptSchema, sink, inst.getConversationId(), context);
 
-                    // 更新包含图片URL的schema
+                    // 图片生成会就地写入 url，需要再存一次
                     context.getPptInstService().updatePptSchema(inst.getId(), JSON.toJSONString(pptSchema), TARGET_STATUS);
                     context.continueStateMachine(inst, sink, query, thinkingBuffer);
                     return null;
                 })
                 .doOnError(err -> {
                     log.error("Schema生成异常", err);
-                    // 失败时不回退状态，只更新错误信息，转到 FAILED
+                    // 失败不回退状态，只记录错误信息
                     context.getPptInstService().updateError(inst.getId(),
                             "Schema生成失败: " + err.getMessage(), PptInstStatus.SCHEMA);
-                    // 转到 FAILED 策略
                     PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe();
 
-        // 保存 disposable 到任务管理器，用于停止任务
+        // 交给任务管理器，便于取消时中断
         context.setDisposable(inst.getConversationId(), disposable);
     }
 
     /**
-     * 执行 Schema 策略，支持修改模式
-     *
-     * @param inst PPT 实例
-     * @param sink 输出 sink
-     * @param query 用户查询
-     * @param thinkingBuffer 思考缓冲
-     * @param context 策略上下文
-     * @param modifyPrompt 修改提示词，如果为 null 表示正常流程
+     * 用给定的修改提示词走一遍 Schema 生成，供修改流程使用
      */
     public void executeWithModifyPrompt(AiPptInst inst, Sinks.Many<String> sink, String query,
                                         StringBuilder thinkingBuffer, PptStateStrategyContext context,
@@ -102,26 +91,24 @@ public class SchemaStrategy implements PptStateStrategy {
 
                     context.getPptInstService().updatePptSchema(inst.getId(), pptSchemaJson, TARGET_STATUS);
 
-                    // 处理图片生成
                     processImageGeneration(pptSchema, sink, inst.getConversationId(), context);
 
-                    // 更新包含图片URL的schema
+                    // 图片生成会就地写入 url，需要再存一次
                     context.getPptInstService().updatePptSchema(inst.getId(), JSON.toJSONString(pptSchema), TARGET_STATUS);
                     context.continueStateMachine(inst, sink, query, thinkingBuffer);
                     return null;
                 })
                 .doOnError(err -> {
                     log.error("Schema生成异常", err);
-                    // 失败时不回退状态，只更新错误信息，转到 FAILED
+                    // 失败不回退状态，只记录错误信息
                     context.getPptInstService().updateError(inst.getId(),
                             "Schema生成失败: " + err.getMessage(), PptInstStatus.SCHEMA);
-                    // 转到 FAILED 策略
                     PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe();
 
-        // 保存 disposable 到任务管理器，用于停止任务
+        // 交给任务管理器，便于取消时中断
         context.setDisposable(inst.getConversationId(), disposable);
     }
 
@@ -130,16 +117,13 @@ public class SchemaStrategy implements PptStateStrategy {
         return TARGET_STATUS;
     }
 
-    /**
-     * 处理图片生成
-     */
     private void processImageGeneration(PptSchema pptSchema, Sinks.Many<String> sink, String conversationId,
                                         PptStateStrategyContext context) {
         if (pptSchema.getSlides() == null) {
             return;
         }
 
-        // 首先收集所有需要生成图片的字段
+        // 收集所有缺图字段
         List<ImageGenerationTask> tasks = new ArrayList<>();
         for (Slide slide : pptSchema.getSlides()) {
             if (slide.getData() == null) {
@@ -154,23 +138,21 @@ public class SchemaStrategy implements PptStateStrategy {
                 }
 
                 String type = fieldData.getType();
-                // 只处理image和background类型
                 if (!"image".equalsIgnoreCase(type) && !"background".equalsIgnoreCase(type)) {
                     continue;
                 }
 
-                // 如果url已经有值，跳过
                 if (fieldData.getUrl() != null && !fieldData.getUrl().isEmpty()) {
                     continue;
                 }
 
-                // url为空，需要用content作为提示词生成图片
+                // url 为空时，content 就是文生图提示词
                 String prompt = fieldData.getContent();
                 if (prompt == null || prompt.isEmpty()) {
                     continue;
                 }
 
-                tasks.add(new ImageGenerationTask(key, fieldData, prompt, slide));
+                tasks.add(new ImageGenerationTask(key, fieldData, prompt));
             }
         }
 
@@ -251,13 +233,11 @@ public class SchemaStrategy implements PptStateStrategy {
         String key;
         FieldData fieldData;
         String prompt;
-        Slide slide;
 
-        ImageGenerationTask(String key, FieldData fieldData, String prompt, Slide slide) {
+        ImageGenerationTask(String key, FieldData fieldData, String prompt) {
             this.key = key;
             this.fieldData = fieldData;
             this.prompt = prompt;
-            this.slide = slide;
         }
     }
 }

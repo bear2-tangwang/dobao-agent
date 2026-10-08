@@ -24,22 +24,20 @@ public class OutlineStrategy implements PptStateStrategy {
                         StringBuilder thinkingBuffer, PptStateStrategyContext context) {
         sink.tryEmitNext(context.createThinkingResponse("正在生成PPT大纲...\n"));
 
-        String requirement = inst.getRequirement(); // 获取需求
-        String searchInfo = inst.getSearchInfo(); // 获取搜索信息
-        String templateCode = inst.getTemplateCode(); // 获取模板编码
+        String requirement = inst.getRequirement();
+        String searchInfo = inst.getSearchInfo();
+        String templateCode = inst.getTemplateCode();
         AiPptTemplate template = context.getPptTemplateService().getByCode(templateCode);
 
         if (template == null) {
             log.error("模板不存在: templateCode={}", templateCode);
-            // 失败时不回退状态，只更新错误信息，转到 FAILED
+            // 失败不回退状态，只记录错误信息
             context.getPptInstService().updateError(inst.getId(),
                     "模板不存在: " + templateCode, PptInstStatus.TEMPLATE);
-            // 转到 FAILED 策略
             PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
             return;
         }
 
-        // 根据模板的schema和搜索信息来生成大纲
         String templateSchema = template.getTemplateSchema();
         String prompt = PptBuilderPrompts.getOutlinePrompt(requirement, templateSchema, template.getTemplateName(), searchInfo);
 
@@ -62,16 +60,15 @@ public class OutlineStrategy implements PptStateStrategy {
                 })
                 .doOnError(err -> {
                     log.error("大纲生成异常", err);
-                    // 失败时不回退状态，只更新错误信息，转到 FAILED
+                    // 失败不回退状态，只记录错误信息
                     context.getPptInstService().updateError(inst.getId(),
                             "大纲生成失败: " + err.getMessage(), PptInstStatus.OUTLINE);
-                    // 转到 FAILED 策略
                     PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe();
 
-        // 保存 disposable 到任务管理器，用于停止任务
+        // 交给任务管理器，便于取消时中断
         context.setDisposable(inst.getConversationId(), disposable);
     }
 

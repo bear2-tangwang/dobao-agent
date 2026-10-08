@@ -70,12 +70,7 @@ public class SimpleReactAgent {
     private int maxRounds;
     private ChatMemory chatMemory;
 
-    /**
-     * 新增 reflection 相关参数
-     */
-    // 功能增强拦截器
     private List<Advisor> advisors;
-    //最大反思轮数
     private int maxReflectionRounds;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -88,7 +83,6 @@ public class SimpleReactAgent {
         this.maxRounds = maxRounds;
         this.chatMemory = chatMemory;
 
-        // 新增 reflection 相关参数
         this.maxReflectionRounds = maxReflectionRounds;
         this.advisors = advisors;
         initChatClient();
@@ -115,17 +109,10 @@ public class SimpleReactAgent {
         }
     }
 
-    /**
-     * 非流式输出
-     *
-     * @param question
-     * @return
-     */
     public String call(String question) {
         return callInternal(null, question);
     }
 
-    // 带会话记忆
     public String call(String conversationId, String question) {
         return callInternal(conversationId, question);
     }
@@ -137,7 +124,6 @@ public class SimpleReactAgent {
         messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
         messages.add(new SystemMessage(systemPrompt));
 
-        // ===== 加载历史记忆 =====
         if (useMemory) {
             List<Message> history = chatMemory.get(conversationId);
             if (history != null && !history.isEmpty()) {
@@ -147,7 +133,6 @@ public class SimpleReactAgent {
 
         messages.add(new UserMessage("<question>" + question + "</question>"));
 
-        // 添加记忆
         if (useMemory) {
             chatMemory.add(conversationId, new UserMessage(question));
         }
@@ -182,7 +167,6 @@ public class SimpleReactAgent {
 
             AssistantMessage.Builder builder = AssistantMessage.builder().content(aiText);
 
-            // ===== 没有工具调用，视为最终答案 =====
             if (!chatResponse.chatResponse().hasToolCalls()) {
                 if (useMemory) {
                     chatMemory.add(conversationId, new AssistantMessage(aiText));
@@ -190,7 +174,6 @@ public class SimpleReactAgent {
                 return aiText;
             }
 
-            // ===== 有工具调用：执行工具 =====
             messages.add(builder.toolCalls(chatResponse.chatResponse().getResult().getOutput().getToolCalls()).build());
 
             chatResponse.chatResponse()
@@ -221,7 +204,7 @@ public class SimpleReactAgent {
     }
 
     /**
-     * 每轮执行的状态标记位
+     * 单轮推理的累积状态：文本分片与工具调用分片。
      */
     private static class RoundState {
         RoundMode mode = RoundMode.UNKNOWN;
@@ -231,23 +214,10 @@ public class SimpleReactAgent {
     }
 
 
-    /**
-     * 流式输出
-     *
-     * @param question
-     * @return
-     */
     public Flux<String> stream(String question) {
         return streamInternal(null, question);
     }
 
-    /**
-     * 带会话记忆的流失输出
-     *
-     * @param conversationId
-     * @param question
-     * @return
-     */
     public Flux<String> stream(String conversationId, String question) {
         return streamInternal(conversationId, question);
     }
@@ -260,7 +230,6 @@ public class SimpleReactAgent {
         messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
         messages.add(new SystemMessage(systemPrompt));
 
-        // ===== 加载历史记忆 =====
         if (useMemory) {
             List<Message> history = chatMemory.get(conversationId);
             if (history != null && !history.isEmpty()) {
@@ -270,27 +239,19 @@ public class SimpleReactAgent {
 
         messages.add(new UserMessage("<question>" + question + "</question>"));
 
-        // 添加记忆
         if (useMemory) {
             chatMemory.add(conversationId, new UserMessage(question));
         }
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
-        // 迭代轮次
         AtomicLong roundCounter = new AtomicLong(0);
-        // 是否发送最终结果标记位
         AtomicBoolean hasSentFinalResult = new AtomicBoolean(false);
 
-        hasSentFinalResult.set(false);
-        roundCounter.set(0);
-
-        // 收集最终答案，存储memory
         StringBuilder finalAnswerBuffer = new StringBuilder();
 
         scheduleRound(messages, sink, roundCounter, hasSentFinalResult, finalAnswerBuffer, useMemory, conversationId);
 
         return sink.asFlux()
-                // 收集最终答案
                 .doOnNext(finalAnswerBuffer::append)
                 .doOnCancel(() -> hasSentFinalResult.set(true))
                 .doFinally(signalType -> {
@@ -300,7 +261,6 @@ public class SimpleReactAgent {
 
     private void scheduleRound(List<Message> messages, Sinks.Many<String> sink, AtomicLong roundCounter, AtomicBoolean hasSentFinalResult,
                                StringBuilder finalAnswerBuffer, boolean useMemory, String conversationId) {
-        // 轮次+1
         roundCounter.incrementAndGet();
         RoundState state = new RoundState();
 
@@ -331,7 +291,6 @@ public class SimpleReactAgent {
         String text = gen.getOutput().getText();
         List<AssistantMessage.ToolCall> tc = gen.getOutput().getToolCalls();
 
-        // 一旦发现 tool_call，立即进入 TOOL_CALL 模式
         if (tc != null && !tc.isEmpty()) {
             state.mode = RoundMode.TOOL_CALL;
 
@@ -341,7 +300,6 @@ public class SimpleReactAgent {
             return;
         }
 
-        // 还没出现 tool_call，发送并缓存文本
         if (text != null) {
             sink.tryEmitNext(text);
             state.textBuffer.append(text);
@@ -364,18 +322,14 @@ public class SimpleReactAgent {
             }
         }
 
-        // 新 tool call
         state.toolCalls.add(incoming);
     }
 
 
-    /**
-     * 轮次结束处理工具调用
-     */
     private void finishRound(List<Message> messages, Sinks.Many<String> sink, RoundState state, AtomicLong roundCounter,
                              AtomicBoolean hasSentFinalResult, StringBuilder finalAnswerBuffer, boolean useMemory, String conversationId) {
 
-        // 如果整轮都没有 tool_call，才是最终答案
+        // 整轮都没有 tool_call 才算最终答案
         if (state.mode != RoundMode.TOOL_CALL) {
             String finalText = state.textBuffer.toString();
             sink.tryEmitComplete();
@@ -392,7 +346,6 @@ public class SimpleReactAgent {
             return;
         }
 
-        // TOOL_CALL
         AssistantMessage assistantMsg = AssistantMessage.builder().toolCalls(state.toolCalls).build();
 
         messages.add(assistantMsg);
@@ -475,7 +428,6 @@ public class SimpleReactAgent {
                     Object result = callback.call(argsJson);
                     String resultStr = Objects.toString(result, "");
 
-                    // 解析搜索结果（如果是 tavily search）
                     if (agentState != null) {
                         parseSearchResult(resultStr, agentState);
                     }
@@ -521,8 +473,7 @@ public class SimpleReactAgent {
     }
 
     /**
-     * 解析搜索结果
-     * 从工具返回的 JSON 中提取搜索结果并添加到 AgentState
+     * 从工具返回的 JSON 中提取搜索结果并添加到 AgentState。
      */
     private void parseSearchResult(String resultJson, AgentState state) {
         try {
@@ -566,27 +517,18 @@ public class SimpleReactAgent {
         }
     }
 
-    /**
-     * 获取节点安全值
-     */
     private String getSafe(JsonNode node, String field) {
         JsonNode v = node.get(field);
         return v == null || v.isNull() ? null : v.asText();
     }
 
     /**
-     * 带参考来源的调用
-     * 返回 SimpleReactResult，包含答案和搜索结果列表
+     * 带参考来源的调用，返回答案与搜索结果列表。
      */
     public SimpleReactResult callWithReference(String conversationId, String question) {
         return executeInternal(conversationId, question, true);
     }
 
-    /**
-     * 内部执行方法
-     *
-     * @param withReference 是否需要返回参考来源
-     */
     private SimpleReactResult executeInternal(String conversationId, String question, boolean withReference) {
         List<Message> messages = Collections.synchronizedList(new ArrayList<>());
         boolean useMemory = conversationId != null && chatMemory != null;
@@ -596,7 +538,6 @@ public class SimpleReactAgent {
         messages.add(new SystemMessage(REACT_AGENT_SYSTEM_PROMPT));
         messages.add(new SystemMessage(systemPrompt));
 
-        // ===== 加载历史记忆 =====
         if (useMemory) {
             List<Message> history = chatMemory.get(conversationId);
             if (history != null && !history.isEmpty()) {
@@ -606,12 +547,10 @@ public class SimpleReactAgent {
 
         messages.add(new UserMessage("<question>" + question + "</question>"));
 
-        // 添加记忆
         if (useMemory) {
             chatMemory.add(conversationId, new UserMessage(question));
         }
 
-        // 迭代轮次
         int round = 0;
 
         while (true) {
@@ -644,7 +583,6 @@ public class SimpleReactAgent {
 
             AssistantMessage.Builder builder = AssistantMessage.builder().content(chatResponse.chatResponse().getResult().getOutput().getText());
 
-            // ===== 没有工具调用，视为最终答案 =====
             if (!chatResponse.chatResponse().hasToolCalls()) {
                 String finalText = chatResponse.chatResponse().getResult().getOutput().getText();
                 if (useMemory) {
@@ -656,7 +594,6 @@ public class SimpleReactAgent {
                         .build();
             }
 
-            // ===== 有工具调用：执行工具 =====
             List<AssistantMessage.ToolCall> toolCalls = chatResponse.chatResponse().getResult().getOutput().getToolCalls();
             messages.add(builder.toolCalls(toolCalls).build());
 
@@ -674,7 +611,6 @@ public class SimpleReactAgent {
                     Object result = callback.call(argsJson);
                     String resultStr = Objects.toString(result, "");
 
-                    // 解析搜索结果
                     if (agentState != null) {
                         parseSearchResult(resultStr, agentState);
                     }

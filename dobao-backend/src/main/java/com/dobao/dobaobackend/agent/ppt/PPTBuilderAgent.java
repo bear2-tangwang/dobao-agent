@@ -10,7 +10,6 @@ import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.pptx.AiPptInst;
 import com.dobao.dobaobackend.entity.record.pptx.PptInstStatus;
 import com.dobao.dobaobackend.entity.record.pptx.PptIntentResult;
-import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
 import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.service.*;
 import com.dobao.dobaobackend.utils.AppContextClient;
@@ -58,10 +57,8 @@ public class PPTBuilderAgent extends BaseAgent {
 
         this.chatClient = ChatClient.builder(chatModel).build();
 
-        // 初始化意图识别器
         this.intentRecognizer = new PptIntentRecognizer(chatClient, pptInstService);
 
-        // 初始化工具记录集合
         this.usedTools = new HashSet<>();
     }
 
@@ -76,49 +73,41 @@ public class PPTBuilderAgent extends BaseAgent {
     public Flux<String> execute(String conversationId, String query) {
         log.info("开始PPT处理: conversationId={}, query={}", conversationId, query);
 
-        // 检查是否已有任务在执行
         Flux<String> checkResult = checkRunningTask(conversationId);
         if (checkResult != null) {
             return checkResult;
         }
 
-        // 保存当前会话ID
         this.currentConversationId = conversationId;
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // 注册任务到管理器
         AgentTaskManager.TaskInfo taskInfo = registerTask(conversationId, sink);
         if (taskInfo == null && conversationId != null && taskManager != null) {
             return Flux.error(new IllegalStateException("该会话正在执行中，请稍后再试"));
         }
 
-        // 收集思考过程
         StringBuilder thinkingBuffer = new StringBuilder();
-        // 收集最终答案
         StringBuilder finalAnswerBuffer = new StringBuilder();
 
         try {
-            // 初始化策略上下文
             initStrategyContext();
 
-            // 1. 意图识别
             PptIntentResult intentResult = intentRecognizer.recognize(conversationId, query);
             log.info("意图识别结果: intent={}, reason={}", intentResult.getIntent(), intentResult.getReason());
 
-            // 2. 保存对话
             if (sessionService != null) {
                 AiSession savedSession = sessionService.saveQuestion(
-                        SaveQuestionRequest.builder()
+                        saveQuestionBuilder()
                                 .sessionId(conversationId)
                                 .question(query)
+                                .agentType(agentType)
                                 .build()
                 );
                 currentSessionId = savedSession.getId();
                 strategyContext.setCurrentSessionId(currentSessionId);
             }
 
-            // 3. 根据意图路由
             switch (intentResult.getIntent()) {
                 case CREATE_PPT -> handleCreateIntent(conversationId, query, sink, thinkingBuffer);
                 case MODIFY_PPT -> handleModifyIntent(conversationId, query, sink, thinkingBuffer);
@@ -154,7 +143,6 @@ public class PPTBuilderAgent extends BaseAgent {
                     log.info("最终答案: {}", finalAnswerBuffer);
                     log.info("思考过程: {}", thinkingBuffer);
 
-                    // 保存结果到会话
                     if (sessionService != null && currentSessionId != null && finalAnswerBuffer.length() > 0) {
                         UpdateAnswerRequest request = UpdateAnswerRequest.builder()
                                 .id(currentSessionId)
@@ -165,15 +153,11 @@ public class PPTBuilderAgent extends BaseAgent {
                         log.info("PPT结果已保存到会话: sessionId={}", currentConversationId);
                     }
 
-                    // 流结束时移除任务
                     taskManager.stopTask(conversationId);
                 })
                 .doOnError(err -> log.error("PPT处理流输出异常", err));
     }
 
-    /**
-     * 初始化策略上下文
-     */
     private void initStrategyContext() {
         strategyContext = new PptStateStrategyContext(
                 chatClient,
@@ -192,24 +176,15 @@ public class PPTBuilderAgent extends BaseAgent {
         strategyContext.setCurrentSessionId(currentSessionId);
     }
 
-    /**
-     * 处理CREATE_PPT意图
-     */
     private void handleCreateIntent(String conversationId, String query, Sinks.Many<String> sink, StringBuilder thinkingBuffer) {
         sink.tryEmitNext(createThinkingResponse("开始创建新的PPT...\n"));
 
-        // 创建新的PPT实例
         AiPptInst inst = pptInstService.createInst(conversationId, query);
 
-        // 启动状态机循环
         PptStateStrategyFactory.getInstance().executeNextState(inst, sink, query, thinkingBuffer, strategyContext);
     }
 
-    /**
-     * 处理MODIFY_PPT意图
-     */
     private void handleModifyIntent(String conversationId, String query, Sinks.Many<String> sink, StringBuilder thinkingBuffer) {
-        // 获取最新的PPT实例
         AiPptInst inst = pptInstService.getLatestInst(conversationId);
 
         if (inst == null) {
@@ -232,19 +207,13 @@ public class PPTBuilderAgent extends BaseAgent {
 
         sink.tryEmitNext(createThinkingResponse("正在修改PPT...\n"));
 
-        // 设置修改操作标记和修改需求
         strategyContext.setModifyMode(true);
         strategyContext.setModifyQuery(query);
 
-        // 生成修改后的Schema
         executeModifyFlow(inst, query, sink, thinkingBuffer);
     }
 
-    /**
-     * 处理RESUME_PPT意图（断点重连）
-     */
     private void handleResumeIntent(String conversationId, String query, Sinks.Many<String> sink, StringBuilder thinkingBuffer) {
-        // 获取最新的PPT实例
         AiPptInst inst = pptInstService.getLatestInst(conversationId);
 
         if (inst == null) {
@@ -268,13 +237,9 @@ public class PPTBuilderAgent extends BaseAgent {
 
         sink.tryEmitNext(createThinkingResponse("正在从状态 " + status + " 继续执行PPT生成...\n"));
 
-        // 直接从当前状态执行状态机
         PptStateStrategyFactory.getInstance().executeNextState(inst, sink, query, thinkingBuffer, strategyContext);
     }
 
-    /**
-     * 修改PPT流程
-     */
     private void executeModifyFlow(AiPptInst inst, String query, Sinks.Many<String> sink, StringBuilder thinkingBuffer) {
         sink.tryEmitNext(createThinkingResponse("正在分析修改需求...\n"));
         sink.tryEmitNext(createThinkingResponse("正在修改PPT内容...\n"));
@@ -283,9 +248,6 @@ public class PPTBuilderAgent extends BaseAgent {
         PptStateStrategyFactory.getInstance().executeSchemaStrategy(inst, sink, query, thinkingBuffer, strategyContext);
     }
 
-    /**
-     * 保存结果到会话
-     */
     private void saveResultToSession(AiPptInst inst, String result, StringBuilder thinkingBuffer) {
         if (sessionService == null || currentSessionId == null) {
             return;

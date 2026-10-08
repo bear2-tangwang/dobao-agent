@@ -4,15 +4,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
 
 /**
- * PgVector 向量库工厂
- * 按表名动态创建/加载向量库实例，供不同业务表隔离存储向量数据
+ * PgVector 向量库工厂：按表名动态创建或加载向量库实例，供不同业务表隔离存储向量数据。
+ *
+ * <p>数据源即全应用唯一的 {@code DataSource}（PG 库 dobao-vector）：合库前这里注入的是
+ * 独立的 {@code pgVectorDataSource}，与业务侧 MySQL 分属两个连接池，导致
+ * {@code FileManageService} 的事务管不住向量写入；合库后业务表与 vector_file_info
+ * 同库同池，跨库一致性缺口随之消失。
  */
 @Component
 @Slf4j
@@ -22,7 +25,7 @@ public class DynamicPgVectorStoreFactory {
     private final EmbeddingModel embeddingModel;
 
     @Autowired
-    public DynamicPgVectorStoreFactory(@Qualifier("pgVectorDataSource") DataSource dataSource, EmbeddingModel embeddingModel) {
+    public DynamicPgVectorStoreFactory(DataSource dataSource, EmbeddingModel embeddingModel) {
         this.dataSource = dataSource;
         this.embeddingModel = embeddingModel;
     }
@@ -33,7 +36,6 @@ public class DynamicPgVectorStoreFactory {
      * @param tableName 向量表名
      */
     public PgVectorStore createPgVectorStore(String tableName) {
-        // 参数校验
         if (tableName == null || tableName.trim().isEmpty()) {
             throw new IllegalArgumentException("向量表名称不能为空！");
         }

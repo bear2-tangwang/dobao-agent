@@ -1,0 +1,85 @@
+---
+title: "流程图一：用户提问 → 上下文装配 → 发起推理"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Microsoft YaHei, PingFang SC, Segoe UI, sans-serif"
+    fontSize: "15px"
+    lineColor: "#5b6b7c"
+    primaryColor: "#eaf2fb"
+    primaryBorderColor: "#4a7ebb"
+    primaryTextColor: "#12263a"
+    tertiaryColor: "#f4f7fa"
+  flowchart:
+    curve: basis
+    nodeSpacing: 28
+    rankSpacing: 50
+    padding: 10
+    useMaxWidth: false
+---
+flowchart TD
+
+subgraph P1["① 请求接入"]
+  U1["👤 用户输入问题<br/>并点击发送"]
+  U2["GET 请求<br/>/agent/chat/stream<br/>query 与 conversationId"]
+  C1["AgentController<br/>webSearchStream<br/>接收两个请求参数"]
+  C2{"query 是否<br/>为空或全空白"}
+  C3["返回 Flux.error<br/>IllegalArgument<br/>Exception"]
+  C4["initWebSearchAgent<br/>构建 Agent 实例<br/>name: web react<br/>maxRounds: 5"]
+  C5["WebSearchReactAgent 构造<br/>initChatClient 初始化<br/>绑定 chatModel<br/>与 Tavily 工具"]
+end
+
+subgraph P2["② 会话记忆与并发校验"]
+  M1[("🗄️ 查询 ai_session 表<br/>findRecent<br/>BySessionId<br/>取最近 30 条历史问答")]
+  M2["createPersistent<br/>ChatMemory<br/>按时间正序回填记忆"]
+  M3["setChatMemory<br/>注入会话记忆"]
+  M4{"checkRunningTask<br/>该会话是否<br/>已有任务在跑"}
+  M5["返回 Flux.error<br/>该会话正在执行中"]
+  M6["initTimers 开始计时<br/>clearUsedTools<br/>清空工具记录"]
+  M7["创建 Sinks.Many<br/>unicast 单订阅<br/>开启背压缓冲"]
+  M8{"registerTask<br/>注册是否成功"}
+  M9["返回 Flux.error<br/>该会话正在执行中"]
+end
+
+subgraph P3["③ 上下文装配"]
+  X1["装配 messages<br/>系统提示词<br/>+ 自定义提示词"]
+  X2["loadChatHistory<br/>读入历史记忆<br/>跳过 SystemMessage"]
+  X3["追加 UserMessage<br/>question 包裹标签"]
+  M10[("🗄️ saveQuestion<br/>写入用户问题<br/>ai_session INSERT<br/>取回自增 id")]
+  X4["初始化轮次计数器<br/>答案与思考缓冲<br/>AgentState 状态"]
+end
+
+subgraph P4["④ 发起推理"]
+  R1["轮次计数加一<br/>新建 RoundState"]
+  R2["chatClient 流式<br/>调用大模型<br/>携带全部工具定义"]
+  R3["模型逐块返回 chunk"]
+  R5["mergeToolCall<br/>按 id 合并参数分片<br/>标记 TOOL_CALL"]
+  R6["累积 textBuffer<br/>推送 type=text"]
+  C6["➡️ 进入流程图二<br/>本轮结束判定"]
+end
+
+U1 --> U2 --> C1 --> C2
+C2 -- 是 --> C3
+C2 -- 否 --> C4 --> C5 --> M1 --> M2 --> M3 --> M4
+M4 -- 是 --> M5
+M4 -- 否 --> M6 --> M7 --> M8
+M8 -- 否 --> M9
+M8 -- 是 --> X1 --> X2 --> X3 --> M10 --> X4 --> R1 --> R2 --> R3
+R3 --> R5 --> R6 --> C6
+
+classDef user fill:#fff4d6,stroke:#d9a441,stroke-width:2px,color:#5a3d00
+classDef entry fill:#e3f2fd,stroke:#1e6fb8,stroke-width:2px,color:#0d3b66
+classDef step fill:#eaf7ec,stroke:#3d9a50,stroke-width:1.5px,color:#12401d
+classDef decision fill:#fdeaea,stroke:#c94a4a,stroke-width:1.5px,color:#5c1414
+classDef db fill:#f3e9fb,stroke:#8e44ad,stroke-width:2px,color:#3d1259
+classDef stop fill:#f8f9fb,stroke:#8794a5,stroke-width:1.5px,color:#26313d
+classDef cont fill:#fff0e0,stroke:#e07b1a,stroke-width:2px,color:#5c2f00
+
+class U1,U2 user
+class C1,C4,C5 entry
+class C2,M4,M8 decision
+class C3,M5,M9 stop
+class M1,M10 db
+class M2,M3,M6,M7,R1,R2,R3,X1,X2,X3,X4 step
+class R5,R6 step
+class C6 cont

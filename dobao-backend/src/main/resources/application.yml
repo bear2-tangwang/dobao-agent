@@ -5,33 +5,41 @@ server:
       charset: UTF-8
       force: true
       enabled: true
+    session:
+      # 登录态保留 30 天
+      timeout: 30d
+      cookie:
+        # Spring Session 的 DefaultCookieSerializer 会继承下面这几项；
+        # 引入 spring-session-jdbc 后 Cookie 名默认是 SESSION，这里显式改名。
+        name: DOBAO_SID
+        http-only: true
+        same-site: lax
+        # 生产 HTTPS 改成 true
+        # secure: true
 spring:
   ai:
     openai:
-      #      api-key: @dashscope.api.key@
       api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
-      #      base-url: https://dashscope.aliyuncs.com/compatible-mode/
       base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
       chat:
         options:
-          model: qwen3.8-2.4t-a95b
+          model: qwen3.7-flash-2026-07-15
           temperature: 0.7
-          maxTokens: 5000
+          maxTokens: 10000
 
       embedding:
-        #        base-url: https://dashscope.aliyuncs.com/compatible-mode/
         base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
-        #        api-key: @dashscope.api.key@
         api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
         options:
           model: qwen3.7-text-embedding
-          dimmension: 1024
+          dimensions: 1024
 
   datasource:
-    url: jdbc:mysql://127.0.0.1:3306/dobao?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8
-    username: root
-    password: 123456
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 业务数据 + 向量数据同库（dobao-vector），全应用只有这一个数据源。
+    url: jdbc:postgresql://localhost:5433/dobao-vector?stringtype=unspecified
+    username: pgvector
+    password: 123321
+    driver-class-name: org.postgresql.Driver
     hikari:
       minimum-idle: 5
       maximum-pool-size: 20
@@ -39,14 +47,25 @@ spring:
       connection-timeout: 30000
       max-lifetime: 1800000
 
-  # MyBatis-Plus 配置
+  autoconfigure:
+    # 关掉 spring-ai pgvector starter 自动装配的第二个 VectorStore Bean。
+    # 本项目的向量读写入口是 DynamicPgVectorStoreFactory（表 vector_file_info），
+    exclude: org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
   mybatis-plus:
     mapper-locations: classpath:mapper/*.xml
   servlet:
     multipart:
       enabled: true
-      max-file-size: 50MB
-      max-request-size: 50MB
+      max-file-size: 80MB
+      max-request-size: 80MB
+
+  # 登录态落 PG（SPRING_SESSION 表），后端重启不掉登录
+  session:
+    store-type: jdbc
+    jdbc:
+      initialize-schema: always
+      table-name: SPRING_SESSION
 
 minio:
   url: http://127.0.0.1:9000/
@@ -54,30 +73,50 @@ minio:
   secretKey: admin@123456
   bucketName: dobao-agent
   endpoint: http://127.0.0.1:9000/
+  # 生产环境对外可达的 MinIO 域名（MinioPublicUrlProvider 使用）。
+  # dev 留空：dev 走百炼临时文件上传，不需要公网域名。
+  public-base-url: ${MINIO_PUBLIC_BASE_URL:}
+
+# 面试总结
+interview:
+  asr:
+    # 必须带 /api/v1，否则 /uploads、/services/audio/asr/transcription、/tasks/{id} 全部 404
+    base-url: ${DASHSCOPE_ASR_BASE_URL:https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1}
+    # 不写成裸 ${DASHSCOPE_API_KEY}：占位符无法解析会让整个应用启动失败
+    api-key: ${DASHSCOPE_API_KEY:${spring.ai.openai.api-key}}
+    model: qwen-audio-3.1-asr-flash-filetrans
+    # 轮询间隔（毫秒）
+    poll-interval-ms: 5000
+    # 30 分钟兜底超时
+    poll-timeout-ms: 1800000
+    # true=dev 走百炼临时文件上传（本地无需公网域名）；false=prod 走 MinIO 公网地址。
+    # 这是 dev/prod 的唯一切换开关，两个 profile 配置文件目前为空。
+    temp-upload-enabled: true
+    max-audio-bytes: 83886080        # 80MB，与 spring.servlet.multipart.max-file-size 对齐
+    max-audio-duration-ms: 5400000   # 1.5 小时（模型支持 12 小时，这是产品侧约束）
+  report:
+    # 固定种子，配合低温保证同一份问答清单产出同一份知识点
+    seed: 42
+    extra-body:
+      enable_thinking: false # 在报告归纳调用里关掉推理模型的思考
+    extra-body-keys:
+      - enable_thinking # 只应用到报告归纳调用上的键
+  stream:
+    heartbeat-ms: 15000 # stream 心跳间隔（毫秒）
 
 # Qwen 文生图（ImageGenerationService 使用）
 qwen:
   image:
-    # workspace MaaS 主机；如需改用公共百炼主机，替换为 https://dashscope.aliyuncs.com
+    # workspace MaaS 主机；改用公共百炼时替换为 https://dashscope.aliyuncs.com
     api-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
     model: qwen-image-3.0
 
-embeddings:
-  store:
-    host: localhost
-    port: 5433
-    database: dobao-vector
-    user: pgvector
-    password: 123321
+
 
 # Tavily
 tavily:
-  api-key: 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
+  api-key: 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
   mcp-url: https://mcp.tavily.com/mcp/
-
-#grsai:
-#  nanobanana:
-#    api-key: sk-ec99XXXXXXXXXXXXXX
 
 logging:
   level:
@@ -87,3 +126,31 @@ logging:
     io:
       modelcontextprotocol:
         client: ERROR
+
+
+# ==================== GitHub OAuth 登录 ====================
+# ⚠️ 会话 Cookie 按主机名隔离，端口不影响。下面两个地址的主机名必须与「浏览器里访问
+#   前端的地址」完全一致（redirect-uri 是 GitHub 回跳地址，frontend-base-url 是授权后
+#   浏览器的落点），并同时与 GitHub OAuth App 里登记的 callback URL 一致。
+#   混用 localhost 与 127.0.0.1 会让 authorize 写入的 state 落在另一个站点，回跳时带不上
+#   Cookie，用户只会看到 ?error=state（"登录状态已过期"）。前端登录页会比对主机名并提示。
+github:
+  oauth:
+    client-id: ${GITHUB_CLIENT_ID:Ov23liQzhSR9SuuqMuwX}
+    client-secret: ${GITHUB_CLIENT_SECRET:831fea2ecc9541b5084af809fdc248e4a329d431}
+    # 访问 github.com 的 HTTP CONNECT 代理。JVM 不读 Windows 系统代理设置，
+    # 浏览器能打开 GitHub 不等于后端能连上（api.github.com 直连是通的，只配这个就够）。
+    # 只作用于 GitHub 这两次调用。不需要代理时置空：GITHUB_PROXY_HOST=
+    proxy-host: ${GITHUB_PROXY_HOST:127.0.0.1}
+    proxy-port: ${GITHUB_PROXY_PORT:7892}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://127.0.0.1:8888/oauth/github/callback}
+    # 登录成功后浏览器要落回的前端地址（授权失败时也用它提示）
+    frontend-base-url: ${FRONTEND_BASE_URL:http://127.0.0.1:5173}
+    # 未登录时业务数据归属的兜底用户，与三张表 user_id 列的 DEFAULT 'default' 对齐，
+    # 这样历史数据在未登录时仍然照常可见。
+    default-user-id: default
+    # 登录态在 Session 里占用的键名
+    session-user-key: DOBAO_UID
+    # GET /auth/diagnostics（登录链路诊断：当前会话 id、会话里有没有 state）。
+    # 生产务必改成 false —— 它会暴露会话 id。
+    diagnostics-enabled: true

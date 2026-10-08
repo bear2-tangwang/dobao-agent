@@ -27,12 +27,10 @@ public class TemplateStrategy implements PptStateStrategy {
                         StringBuilder thinkingBuffer, PptStateStrategyContext context) {
         sink.tryEmitNext(context.createThinkingResponse("正在设计模板样式...\n"));
 
-        String requirement = inst.getRequirement(); // 获取需求
+        String requirement = inst.getRequirement();
 
-        // 获取所有可用模板
         List<AiPptTemplate> templates = context.getPptTemplateService().getAllTemplates();
 
-        // 构建模板信息字符串
         StringBuilder templatesInfo = new StringBuilder();
         for (AiPptTemplate template : templates) {
             templatesInfo.append(String.format("""
@@ -68,10 +66,9 @@ public class TemplateStrategy implements PptStateStrategy {
             context.continueStateMachine(inst, sink, query, thinkingBuffer);
         } catch (Exception e) {
             log.error("模板选择异常", e);
-            // 失败时不回退状态，只更新错误信息，转到 FAILED
+            // 失败不回退状态，只记录错误信息
             context.getPptInstService().updateError(inst.getId(),
                     "模板选择失败: " + e.getMessage(), PptInstStatus.TEMPLATE);
-            // 转到 FAILED 策略
             PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
         }
     }

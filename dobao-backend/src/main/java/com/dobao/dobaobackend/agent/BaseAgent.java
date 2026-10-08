@@ -2,8 +2,10 @@ package com.dobao.dobaobackend.agent;
 
 
 import com.alibaba.fastjson2.JSON;
+import com.dobao.dobaobackend.auth.UserContext;
 import com.dobao.dobaobackend.common.AgentResponse;
 import com.dobao.dobaobackend.entity.AiSession;
+import com.dobao.dobaobackend.entity.vo.SaveQuestionRequest;
 import com.dobao.dobaobackend.entity.vo.UpdateAnswerRequest;
 import com.dobao.dobaobackend.prompts.ReactAgentPrompts;
 import com.dobao.dobaobackend.service.AgentTaskManager;
@@ -39,10 +41,8 @@ public abstract class BaseAgent {
     protected AgentTaskManager taskManager;
     protected String agentType;
 
-    // 是否启用推荐问题功能
     protected boolean enableRecommendations = true;
 
-    // 计时器
     protected long startTime;
     protected long firstResponseTime;
     protected Set<String> usedTools;
@@ -52,8 +52,11 @@ public abstract class BaseAgent {
     protected String currentRecommendations;
 
     /**
-     * 构造函数
+     * 本次请求归属的用户：Agent 逻辑跑在 Reactor 线程上，那里读不到 UserContext 的
+     * ThreadLocal，因此在 AgentController 构造 Agent 时注入一次，后续一律读此字段。
      */
+    protected String defaultUserId;
+
     public BaseAgent(String name, ChatModel chatModel, String agentType) {
         this.name = name;
         this.chatModel = chatModel;
@@ -61,24 +64,10 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 子类必须实现的执行方法
-     *
-     * @param conversationId 会话ID
-     * @param question       用户问题
-     * @return 流式输出
+     * 子类实现的执行入口，返回流式输出。
      */
     public abstract Flux<String> execute(String conversationId, String question);
 
-    // ===== 通用方法 =====
-
-    /**
-     * 加载历史记忆并添加到消息列表
-     *
-     * @param conversationId 会话ID
-     * @param messages       目标消息列表
-     * @param skipSystem     是否跳过系统消息
-     * @param addLabel       是否添加"对话历史："标签
-     */
     protected void loadChatHistory(String conversationId, List<Message> messages, boolean skipSystem, boolean addLabel) {
         if (conversationId != null && chatMemory != null) {
             List<Message> history = chatMemory.get(conversationId);
@@ -96,12 +85,6 @@ public abstract class BaseAgent {
         }
     }
 
-    /**
-     * 获取历史消息列表
-     *
-     * @param conversationId 会话ID
-     * @return 历史消息列表
-     */
     protected List<Message> getChatHistory(String conversationId) {
         if (conversationId != null && chatMemory != null) {
             return chatMemory.get(conversationId);
@@ -110,11 +93,7 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 从数据库加载会话session ID 历史记录创建持久化ChatMemory
-     *
-     * @param sessionId   会话ID
-     * @param maxMessages 最大消息数
-     * @return ChatMemory实例
+     * 从数据库读取该会话的历史记录，构建持久化 ChatMemory。
      */
     public ChatMemory createPersistentChatMemory(String sessionId, int maxMessages) {
         if (sessionService == null) {
@@ -122,109 +101,66 @@ public abstract class BaseAgent {
             return MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
         }
 
-        // 查询数据库中的对话历史
-        List<AiSession> history = sessionService.findRecentBySessionId(sessionId, maxMessages);
+        // 必须按归属用户过滤：会话ID由前端生成，不校验归属就等于知道别人的
+        // conversationId 就能把别人的对话读成自己的记忆
+        List<AiSession> history = sessionService.findRecentBySessionId(sessionId, maxMessages, resolveUserId());
 
-        // 创建 ChatMemory
         ChatMemory chatMemory = MessageWindowChatMemory.builder().maxMessages(maxMessages).build();
 
-        // 将历史记录添加到 ChatMemory（按时间顺序）
         if (history != null && !history.isEmpty()) {
-            // 反转历史记录顺序，确保按时间顺序添加
+            // 查询结果是倒序（最新在前），从尾部回放才能保证按时间顺序加入
             for (int i = history.size() - 1; i >= 0; i--) {
                 AiSession record = history.get(i);
-                // 添加用户问题
                 if (record.getQuestion() != null) {
                     chatMemory.add(sessionId, new UserMessage(record.getQuestion()));
                 }
 
-                // 添加AI回复
                 if (record.getAnswer() != null) {
                     chatMemory.add(sessionId, new AssistantMessage(record.getAnswer()));
                 }
             }
-            log.debug("加载会话历史: sessionId={}, recordCount={}", sessionId, history.size());
+            log.info("加载会话历史: sessionId={}, userId={}, recordCount={}", sessionId, resolveUserId(), history.size());
         }
 
         return chatMemory;
     }
 
-    /**
-     * 创建Agent响应
-     *
-     * @param content 内容
-     * @param type    类型
-     * @return JSON格式的响应字符串
-     */
     protected String createResponse(String content, String type) {
         return AgentResponse.json(type, content);
     }
 
-    /**
-     * 创建text类型响应
-     *
-     * @param content 内容
-     * @return JSON格式的响应字符串
-     */
     protected String createTextResponse(String content) {
         return AgentResponse.text(content);
     }
 
-    /**
-     * 创建thinking类型响应
-     *
-     * @param content 内容
-     * @return JSON格式的响应字符串
-     */
     protected String createThinkingResponse(String content) {
         return AgentResponse.thinking(content);
     }
 
     /**
-     * 创建reference类型响应
-     *
-     * @param content 内容（JSON数组字符串，count会自动计算）
-     * @return JSON格式的响应字符串
+     * content 为引用来源 JSON 数组字符串，条数由 AgentResponse 自动计算。
      */
     protected String createReferenceResponse(String content) {
         return AgentResponse.reference(content);
     }
 
-    /**
-     * 创建error类型响应
-     *
-     * @param content 内容
-     * @return JSON格式的响应字符串
-     */
     protected String createErrorResponse(String content) {
         return AgentResponse.error(content);
     }
 
-    /**
-     * 创建recommend类型响应
-     *
-     * @param content 内容（推荐问题JSON数组字符串）
-     * @return JSON格式的响应字符串
-     */
     protected String createRecommendResponse(String content) {
         return AgentResponse.recommend(content);
     }
 
-    /**
-     * 记录首次响应时间
-     */
     protected void recordFirstResponse() {
         if (firstResponseTime == 0 && startTime > 0) {
             firstResponseTime = System.currentTimeMillis() - startTime;
-            log.debug("记录首次响应时间: {}ms", firstResponseTime);
+            log.info("记录首次响应时间: {}ms", firstResponseTime);
         }
     }
 
     /**
-     * 检查并发任务
-     *
-     * @param conversationId 会话ID
-     * @return 错误流，如果没有冲突则返回null
+     * 该会话已有任务在执行时返回错误流，无冲突返回 null。
      */
     protected Flux<String> checkRunningTask(String conversationId) {
         if (conversationId != null && taskManager != null && taskManager.hasRunningTask(conversationId)) {
@@ -234,11 +170,7 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 注册任务到管理器
-     *
-     * @param conversationId 会话ID
-     * @param sink           响应sink
-     * @return 任务信息，如果注册失败返回null
+     * 注册失败（会话已有任务）时返回 null。
      */
     protected AgentTaskManager.TaskInfo registerTask(String conversationId, Sinks.Many<String> sink) {
         if (conversationId != null && taskManager != null) {
@@ -251,30 +183,17 @@ public abstract class BaseAgent {
         return null;
     }
 
-    /**
-     * 移除任务
-     *
-     * @param conversationId 会话ID
-     */
     protected void removeTask(String conversationId) {
         if (conversationId != null && taskManager != null) {
             taskManager.removeTask(conversationId);
         }
     }
 
-    /**
-     * 初始化计时器
-     */
     protected void initTimers() {
         startTime = System.currentTimeMillis();
         firstResponseTime = 0;
     }
 
-    /**
-     * 获取总响应时间
-     *
-     * @return 总响应时间（毫秒）
-     */
     protected long getTotalResponseTime() {
         if (startTime == 0) {
             return 0;
@@ -283,9 +202,7 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 获取使用的工具列表字符串
-     *
-     * @return 逗号分隔的工具名称字符串
+     * 返回逗号分隔的工具名，未使用工具时返回空串。
      */
     protected String getUsedToolsString() {
         if (usedTools == null || usedTools.isEmpty()) {
@@ -294,20 +211,12 @@ public abstract class BaseAgent {
         return String.join(",", usedTools);
     }
 
-    /**
-     * 清除工具记录
-     */
     protected void clearUsedTools() {
         if (usedTools != null) {
             usedTools.clear();
         }
     }
 
-    /**
-     * 记录使用的工具
-     *
-     * @param toolName 工具名称
-     */
     protected void recordUsedTool(String toolName) {
         if (usedTools != null && toolName != null) {
             usedTools.add(toolName);
@@ -315,12 +224,7 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 生成推荐问题
-     *
-     * @param conversationId  会话ID
-     * @param currentQuestion 当前问题
-     * @param currentAnswer   当前答案
-     * @return 推荐问题JSON字符串，失败返回null
+     * 生成推荐问题的 JSON 字符串，未启用或生成失败时返回 null。
      */
     protected String generateRecommendations(String conversationId, String currentQuestion, String currentAnswer) {
         if (!enableRecommendations) {
@@ -376,51 +280,51 @@ public abstract class BaseAgent {
         }
     }
 
-    /**
-     * 从响应中提取JSON数组
-     *
-     * @param response 响应字符串
-     * @return JSON数组字符串，提取失败返回null
-     */
-    private String extractJsonArray(String response) {
-        if (response == null) {
-            return null;
-        }
-
-        // 查找第一个 [ 和最后一个 ]
-        int start = response.indexOf('[');
-        int end = response.lastIndexOf(']');
-
-        if (start >= 0 && end > start) {
-            return response.substring(start, end + 1);
-        }
-
-        return null;
-    }
-
-    // ===== 保存会话的通用方法 =====
-
-    /**
-     * 保存会话结果
-     *
-     * @param request 更新请求
-     * @return 是否保存成功
-     */
     protected boolean updateAnswer(UpdateAnswerRequest request) {
         if (sessionService != null) {
             boolean result = sessionService.updateAnswer(request);
             if (result) {
-                log.debug("保存会话结果: sessionId={}, answerLength={}", request.getId(), request.getAnswer().length());
+                log.info("保存会话结果: sessionId={}, answerLength={}", request.getId(), request.getAnswer().length());
             }
             return result;
         }
         return false;
     }
 
-    // ===== Getter / Setter =====
-
     public void setChatMemory(ChatMemory chatMemory) {
         this.chatMemory = chatMemory;
+    }
+
+    /**
+     * 注入本次请求归属的用户（AgentController 构造 Agent 后立刻调用）。
+     */
+    public void setDefaultUserId(String defaultUserId) {
+        this.defaultUserId = defaultUserId;
+    }
+
+    /**
+     * 取归属用户：优先用注入的字段；字段为空才回退到 UserContext（仅请求线程有效）。
+     */
+    protected String resolveUserId() {
+        if (defaultUserId != null && !defaultUserId.isEmpty()) {
+            return defaultUserId;
+        }
+        return UserContext.getUserIdOrDefault(propertiesDefaultUserId());
+    }
+
+    /**
+     * 兜底用户与各业务表 {@code user_id} 列的 DEFAULT 'default' 保持一致，
+     * Agent 里读不到 Spring 配置，改配置时需同时改这里与建表默认值。
+     */
+    private String propertiesDefaultUserId() {
+        return "default";
+    }
+
+    /**
+     * 构造带归属用户的"保存提问"请求。
+     */
+    protected SaveQuestionRequest.SaveQuestionRequestBuilder saveQuestionBuilder() {
+        return SaveQuestionRequest.builder().userId(resolveUserId());
     }
 
     public void setSessionService(AiSessionService sessionService) {

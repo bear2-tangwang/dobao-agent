@@ -33,16 +33,14 @@ public class RequirementStrategy implements PptStateStrategy {
 
         messages.add(new SystemMessage(prompt));
 
-        // 加载历史记忆
         context.loadChatHistory(inst.getConversationId(), messages, true, true);
 
         messages.add(new UserMessage("<question>" + query + "</question>"));
 
         if (context.getChatMemory() != null) {
-            context.getChatMemory().add(inst.getConversationId(), new UserMessage(query)); // 存储用户问题到记忆
+            context.getChatMemory().add(inst.getConversationId(), new UserMessage(query)); // 用户问题写入记忆，供后续状态复用
         }
 
-        // 流式输出
         StringBuilder responseBuffer = new StringBuilder();
 
         String conversationId = inst.getConversationId();
@@ -60,35 +58,32 @@ public class RequirementStrategy implements PptStateStrategy {
                     String response = responseBuffer.toString();
 
                     if (context.shouldContinueToNextStep(response)) {
-                        // 信息完整，继续下一步：信息收集
+                        // 信息完整 → 进入信息收集
                         context.getPptInstService().updateRequirement(inst.getId(), response, TARGET_STATUS);
                         sink.tryEmitNext(context.createThinkingResponse("\n✅ 需求已确认，开始收集相关信息\n"));
                         context.continueStateMachine(inst, sink, query, thinkingBuffer);
                     } else {
-                        // 信息不足，保存当前状态，转到 FAILED 策略统一输出
+                        // 信息不足 → 交 FAILED 策略统一输出
                         context.getPptInstService().updateRequirement(inst.getId(), response, PptInstStatus.REQUIREMENT);
                         context.getPptInstService().updateError(inst.getId(), "需要补充信息：\n" + response, PptInstStatus.REQUIREMENT);
 
-                        // 保存AI回复到chatMemory
                         if (context.getChatMemory() != null) {
                             context.getChatMemory().add(inst.getConversationId(), new AssistantMessage(response));
                         }
-                        // 转到 FAILED 策略
                         PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                     }
                 })
                 .doOnError(err -> {
                     log.error("需求分析异常", err);
-                    // 失败时不回退状态，只更新错误信息，转到 FAILED
+                    // 失败不回退状态，只记录错误信息
                     context.getPptInstService().updateError(inst.getId(),
                             "需求分析失败: " + err.getMessage(), PptInstStatus.REQUIREMENT);
-                    // 转到 FAILED 策略
                     PptStateStrategyFactory.getInstance().executeFailedState(inst, sink, query, thinkingBuffer, context);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe();
 
-        // 保存 disposable 到任务管理器，用于停止任务
+        // 交给任务管理器，便于取消时中断
         context.setDisposable(conversationId, disposable);
     }
 

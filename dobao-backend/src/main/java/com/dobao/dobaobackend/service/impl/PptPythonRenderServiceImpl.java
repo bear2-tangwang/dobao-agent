@@ -7,20 +7,24 @@ import com.dobao.dobaobackend.service.AiPptTemplateService;
 import com.dobao.dobaobackend.service.MinioService;
 import com.dobao.dobaobackend.service.PptPythonRenderService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * PPT Python 渲染服务实现
@@ -29,8 +33,17 @@ import java.util.Map;
 @Service
 public class PptPythonRenderServiceImpl implements PptPythonRenderService {
 
+    /** 渲染脚本在 classpath 上的位置 */
+    private static final String RENDER_SCRIPT_RESOURCE = "python/render_ppt.py";
+
+    /** python 进程的超时上限 */
+    private static final long RENDER_TIMEOUT_MS = 5 * 60 * 1000L;
+
     private final AiPptTemplateService templateService;
     private final MinioService minioService;
+
+    /** 脚本落盘后的绝对路径，只解压一次 */
+    private volatile String cachedScriptPath;
 
     public PptPythonRenderServiceImpl(AiPptTemplateService templateService, MinioService minioService) {
         this.templateService = templateService;
@@ -42,13 +55,11 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
 
         log.info("开始渲染PPT: instId={}", inst.getId());
 
-        // ---------- 获取模板 ----------
         AiPptTemplate template = templateService.getByCode(inst.getTemplateCode());
         if (template == null) {
             throw new RuntimeException("模板不存在: " + inst.getTemplateCode());
         }
 
-        // 获取python脚本路径、模板文件路径、输出目录
         String pythonScriptPath = getPythonScriptPath();
         String templateFilePath = template.getFilePath();
         String outputDir = getOutputDir();
@@ -63,7 +74,6 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
             throw new RuntimeException("模板文件不存在: " + templateFilePath);
         }
 
-        // ---------- 构建命令 ----------
         List<String> command = List.of(
                 "python",
                 pythonScriptPath,
@@ -80,13 +90,11 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
 
         env.put("PYTHONIOENCODING", "utf-8");
 
-        // ---------- 处理 JSON 传递 ----------
-        // Windows 环境变量长度有限（32KB），大 JSON 会失败
-        // 超过 20KB 自动写入临时文件
+        // Windows 环境变量长度上限约 32KB，大 JSON 走临时文件传递
         if (pptSchema.length() > 20000) {
 
             Path tempFile = Files.createTempFile("ppt_schema_", ".json");
-            Files.writeString(tempFile, pptSchema, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.writeString(tempFile, pptSchema);
 
             env.put("PPT_SCHEMA_FILE", tempFile.toAbsolutePath().toString());
             log.info("JSON过大，使用临时文件传递: {}", tempFile);
@@ -95,10 +103,8 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
             env.put("PPT_SCHEMA", pptSchema);
         }
 
-        // ---------- 启动 ----------
         Process process = pb.start();
 
-        // ---------- 读取输出 ----------
         StringBuilder output = new StringBuilder();
 
         try (BufferedReader reader = new BufferedReader(
@@ -111,28 +117,8 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
             }
         }
 
-        // ---------- 等待（最多5分钟） ----------
-        long timeoutMs = 5 * 60 * 1000L;
-        long startTime = System.currentTimeMillis();
-        boolean finished = false;
-
-        while (System.currentTimeMillis() - startTime < timeoutMs) {
-            try {
-                int exitCode = process.exitValue(); // 进程结束: 获取退出码(0:成功 非0:失败)  进程未结束: 抛出异常
-                // 如果能获取到退出码，说明进程已结束
-                finished = true;
-                if (exitCode != 0) {
-                    log.error("Python执行失败: {}", output);
-                    throw new RuntimeException("Python脚本执行失败:\n" + output);
-                }
-                break;
-            } catch (IllegalThreadStateException e) {
-                // 进程还在运行，继续等待
-                Thread.sleep(1000);
-            }
-        }
-
-        if (!finished) {
+        // 读 stdout 到 EOF 时进程通常已退出，这里再按超时上限兜一次底
+        if (!process.waitFor(RENDER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             process.destroyForcibly();
             throw new RuntimeException("Python执行超时");
         }
@@ -144,17 +130,14 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
             throw new RuntimeException("Python脚本执行失败:\n" + output);
         }
 
-        // ---------- 检查输出 ----------
         File outputFile = new File(outputFilePath);
         if (!outputFile.exists()) {
             throw new RuntimeException("PPT未生成: " + outputFilePath);
         }
 
-        // ---------- 上传到MinIO ----------
         log.info("PPT生成成功，开始上传到MinIO");
         byte[] fileBytes = Files.readAllBytes(outputFile.toPath());
 
-        // 构建MinIO对象名称: ppt/{conversationId}/{filename}
         String objectName = "ppt/" + inst.getConversationId() + "/" + outputFileName;
 
         String fileUrl = minioService.uploadFile(objectName, fileBytes, "application/vnd.openxmlformats-officedocument.presentationml.presentation");
@@ -172,10 +155,27 @@ public class PptPythonRenderServiceImpl implements PptPythonRenderService {
         return fileUrl;
     }
     /**
-     * 获取Python脚本路径
+     * 把渲染脚本从 classpath 解压到临时文件，返回其绝对路径。
+     * 用临时文件而不是 {@code getFile()}：打成可执行 jar 后脚本没有独立的文件系统路径。
      */
-    private String getPythonScriptPath() {
-        return "D:\\java-code\\LLMentor\\agent\\dodo-agent\\src\\main\\resources\\python\\render_ppt.py";
+    private String getPythonScriptPath() throws IOException {
+        if (cachedScriptPath == null) {
+            synchronized (this) {
+                if (cachedScriptPath == null) {
+                    ClassPathResource resource = new ClassPathResource(RENDER_SCRIPT_RESOURCE);
+                    if (!resource.exists()) {
+                        throw new IOException("渲染脚本不存在: " + RENDER_SCRIPT_RESOURCE);
+                    }
+                    try (InputStream in = resource.getInputStream()) {
+                        Path script = Files.createTempFile("render_ppt_", ".py");
+                        Files.copy(in, script, StandardCopyOption.REPLACE_EXISTING);
+                        script.toFile().deleteOnExit();
+                        cachedScriptPath = script.toAbsolutePath().toString();
+                    }
+                }
+            }
+        }
+        return cachedScriptPath;
     }
 
     /**

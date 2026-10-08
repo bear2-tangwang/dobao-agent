@@ -23,13 +23,22 @@ public class AiSession {
     private Long id;
 
     /**
+     * 归属用户ID（db_user.user_id）。
+     *
+     * <p>数据隔离的唯一依据：所有列表/详情/删除查询都必须带上它。
+     * 列有 DEFAULT 'default'。
+     */
+    @TableField("user_id")
+    private String userId;
+
+    /**
      * 会话ID
      */
     @TableField("session_id")
     private String sessionId;
 
     /**
-     * 智能体类型（react/file/ppt）
+     * 智能体类型（chat/ppt/interview 等）
      */
     @TableField("agent_type")
     private String agentType;
@@ -89,7 +98,11 @@ public class AiSession {
     private String thinking;
 
     /**
-     * 关联文件ID（用于关联ai_file_info或ai_ppt_inst）
+     * 关联文件ID（用于关联ai_file_info或ai_ppt_inst）。
+     *
+     * <p>本列是<b>按 {@code agent_type} 解释的多态业务指针</b>，不总是 {@code ai_file_info.file_id}：
+     * {@code agent_type='interview'} 时本列存的是 interviewId（面试业务标识，
+     * 见 {@code InterviewSessionRecorder}），此时它既不指向文件表也不指向 PPT 表。
      */
     @TableField("fileid")
     private String fileid;
