@@ -11,3 +11,8 @@
 # 部署期数据与证书
 /deploy/data/
 /deploy/certs/
+
+# 部署打包产物（开发机构建，绝不上传版本库）
+/dobao-backend.tar
+/dobao-backend.tar.gz
+/docs/

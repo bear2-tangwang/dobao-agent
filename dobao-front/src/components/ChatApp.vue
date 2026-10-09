@@ -144,7 +144,7 @@ const handleLogout = async () => {
       <div v-if="isDragOver" class="drop-overlay">
         <div class="drop-hint">
           <i class="fa-solid fa-cloud-arrow-up"></i>
-          <span>松开以上传文件</span>
+          <span>松开上传文件</span>
         </div>
       </div>
 

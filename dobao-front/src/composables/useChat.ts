@@ -299,6 +299,11 @@ export function useChat() {
       }
     } else if (selectedAgent.value === 'interview') {
       alert(`面试总结只接受音频文件（${AUDIO_EXTENSIONS.join(' / ')}），当前文件：.${ext || '未知'}`)
+    } else if (selectedAgent.value === 'ppt' || selectedAgent.value === 'deep') {
+      // ppt/deep 后端不接收 fileId，文件对它们无效：转交对话助手处理。
+      // 必须先切模式（selectAgent 会清 selectedFile）再上传，否则刚传的文件会被清掉。
+      selectAgent('chat')
+      await handleFile(file)
     } else if (selectedFile.value) {
       alert('已上传文件，请先删除当前文件再上传新文件（限1个）')
     } else {
