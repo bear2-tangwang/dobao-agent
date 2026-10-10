@@ -68,6 +68,9 @@ public class FileManageService {
     @Value("${spring.ai.openai.api-key}")
     private String apiKey;
 
+    @Value("${spring.ai.openai.chat.options.OmniModel}")
+    private String OmniModel;
+
     /**
      * 初始化多模态模型（用于图片识别）
      */
@@ -76,7 +79,7 @@ public class FileManageService {
         try {
             OpenAiChatOptions options = OpenAiChatOptions.builder()
                     .temperature(0.2d)
-                    .model("qwen3-vl-plus")
+                    .model(OmniModel)
                     .build();
             multimodalChatModel = OpenAiChatModel.builder()
                     .openAiApi(OpenAiApi.builder()
