@@ -17,28 +17,33 @@ server:
         # 生产 HTTPS 改成 true
         # secure: true
 spring:
+  config:
+    import: optional:classpath:secrets.yml
   ai:
     openai:
-      api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
+      # 敏感值从 secrets.yml 读取；生产环境由 application-prod.yml 的环境变量覆盖。
+      api-key: ${secrets.spring.ai.openai.api-key}
       base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
       chat:
         options:
-          model: qwen3.7-flash-2026-07-15
+          model: qwen3.8-27b
+          OmniModel: qwen3.8-omni-flash
           temperature: 0.7
           maxTokens: 10000
 
       embedding:
+        api-key: ${secrets.spring.ai.openai.embedding.api-key}
         base-url: https://ws-ae41waoyh0yzb53i.cn-beijing.maas.aliyuncs.com/compatible-mode/
-        api-key: sk-ws-H.PDDLIYX.wIJn.MEUCICfSvx4nZ0tIXuDp0Jrlha-kRZtLDGqq0_tN1NCG3BaEAiEAqpG_UabBDWOWtiV27pK6VRVWJPEEXA3EUUXuKSGf9Zw
         options:
           model: qwen3.7-text-embedding
           dimensions: 1024
 
   datasource:
     # 业务数据 + 向量数据同库（dobao-vector），全应用只有这一个数据源。
+    # 账号密码从 secrets.yml 读取；生产环境由 application-prod.yml 的环境变量覆盖。
     url: jdbc:postgresql://localhost:5433/dobao-vector?stringtype=unspecified
-    username: pgvector
-    password: 123321
+    username: ${secrets.spring.datasource.username}
+    password: ${secrets.spring.datasource.password}
     driver-class-name: org.postgresql.Driver
     hikari:
       minimum-idle: 5
@@ -69,10 +74,11 @@ spring:
 
 minio:
   url: http://127.0.0.1:9000/
-  accessKey: admin
-  secretKey: admin@123456
   bucketName: dobao-agent
   endpoint: http://127.0.0.1:9000/
+  # MinIO 凭证从 secrets.yml 读取；生产环境由环境变量覆盖。
+  access-key: ${secrets.minio.access-key}
+  secret-key: ${secrets.minio.secret-key}
   # 生产环境对外可达的 MinIO 域名（MinioPublicUrlProvider 使用）。
   # dev 留空：dev 走百炼临时文件上传，不需要公网域名。
   public-base-url: ${MINIO_PUBLIC_BASE_URL:}
@@ -90,7 +96,7 @@ interview:
     # 30 分钟兜底超时
     poll-timeout-ms: 1800000
     # true=dev 走百炼临时文件上传（本地无需公网域名）；false=prod 走 MinIO 公网地址。
-    # 这是 dev/prod 的唯一切换开关，两个 profile 配置文件目前为空。
+    # 这是 dev/prod 的唯一切换开关（application-dev.yml=true，application-prod.yml=false）。
     temp-upload-enabled: true
     max-audio-bytes: 83886080        # 80MB，与 spring.servlet.multipart.max-file-size 对齐
     max-audio-duration-ms: 5400000   # 1.5 小时（模型支持 12 小时，这是产品侧约束）
@@ -113,9 +119,9 @@ qwen:
 
 
 
-# Tavily
+# Tavily API Key 从 secrets.yml 读取；生产环境由环境变量覆盖。
 tavily:
-  api-key: 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
+  api-key: ${secrets.tavily.api-key}
   mcp-url: https://mcp.tavily.com/mcp/
 
 logging:
@@ -136,8 +142,9 @@ logging:
 #   Cookie，用户只会看到 ?error=state（"登录状态已过期"）。前端登录页会比对主机名并提示。
 github:
   oauth:
-    client-id: ${GITHUB_CLIENT_ID:Ov23liQzhSR9SuuqMuwX}
-    client-secret: ${GITHUB_CLIENT_SECRET:831fea2ecc9541b5084af809fdc248e4a329d431}
+    # GitHub OAuth 凭证从 secrets.yml 读取；生产环境由环境变量覆盖。
+    client-id: ${secrets.github.oauth.client-id}
+    client-secret: ${secrets.github.oauth.client-secret}
     # 访问 github.com 的 HTTP CONNECT 代理。JVM 不读 Windows 系统代理设置，
     # 浏览器能打开 GitHub 不等于后端能连上（api.github.com 直连是通的，只配这个就够）。
     # 只作用于 GitHub 这两次调用。不需要代理时置空：GITHUB_PROXY_HOST=

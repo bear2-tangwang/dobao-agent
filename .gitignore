@@ -5,9 +5,17 @@
 # 生产密钥（由 .env.example 复制而来），绝不能进版本库
 .env
 
+# 本地开发密钥（由 application-dev.yml.example 复制而来），绝不能进版本库
+/dobao-backend/src/main/resources/application-dev.yml
+
 # 前端构建产物：部署时本地构建后拷进来，不入库
 /deploy/dist/
 
 # 部署期数据与证书
 /deploy/data/
 /deploy/certs/
+
+# 部署打包产物（开发机构建，绝不上传版本库）
+/dobao-backend.tar
+/dobao-backend.tar.gz
+/docs/

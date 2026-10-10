@@ -58,23 +58,7 @@ public class AgentController implements InitializingBean {
     @Autowired
     private GithubOAuthProperties authProperties;
 
-    /**
-     * 取当前登录用户ID（未登录时回退配置的兜底用户）
-     */
-    private String currentUserId() {
-        return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
-    }
 
-    /**
-     * 把归属用户写进 Reactor Context。
-     *
-     * <p>Agent 的 {@code @Tool} 方法（如文件内容检索）由 Spring AI 在 Reactor 链内部调用，
-     * 那里没有请求线程的 ThreadLocal，也不该让 LLM 自己传用户身份。
-     * 工具侧用 {@code Mono.deferContextual} 读 {@link UserContext#REQUEST_USER_KEY}。
-     */
-    private Flux<String> withRequestUser(Flux<String> stream, String userId) {
-        return stream.contextWrite(context -> context.put(UserContext.REQUEST_USER_KEY, userId));
-    }
 
     @Value("${tavily.api-key}")
     private String tavilyApiKey;
@@ -271,6 +255,25 @@ public class AgentController implements InitializingBean {
 
         webSearchToolCallbacks = provider.getToolCallbacks();
         log.info("联网搜索工具回调初始化完成，工具数量: {}", webSearchToolCallbacks.length);
+    }
+
+
+    /**
+     * 取当前登录用户ID（未登录时回退配置的兜底用户）
+     */
+    private String currentUserId() {
+        return UserContext.getUserIdOrDefault(authProperties.getDefaultUserId());
+    }
+
+    /**
+     * 把归属用户写进 Reactor Context。
+     *
+     * <p>Agent 的 {@code @Tool} 方法（如文件内容检索）由 Spring AI 在 Reactor 链内部调用，
+     * 那里没有请求线程的 ThreadLocal，也不该让 LLM 自己传用户身份。
+     * 工具侧用 {@code Mono.deferContextual} 读 {@link UserContext#REQUEST_USER_KEY}。
+     */
+    private Flux<String> withRequestUser(Flux<String> stream, String userId) {
+        return stream.contextWrite(context -> context.put(UserContext.REQUEST_USER_KEY, userId));
     }
 
     /**

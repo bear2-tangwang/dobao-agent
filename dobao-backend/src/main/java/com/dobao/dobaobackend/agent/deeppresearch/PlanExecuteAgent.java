@@ -4,7 +4,6 @@ package com.dobao.dobaobackend.agent.deeppresearch;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.dobao.dobaobackend.agent.BaseAgent;
-import com.dobao.dobaobackend.common.AgentResponse;
 import com.dobao.dobaobackend.entity.AiSession;
 import com.dobao.dobaobackend.entity.record.*;
 import com.dobao.dobaobackend.entity.vo.OverAllState;
@@ -545,7 +544,11 @@ public class PlanExecuteAgent extends BaseAgent {
         if (finished.get()) {
             return;
         }
-        sink.tryEmitNext(createResponse(trimBlankTail(content, type), type));
+        // 必须原样发出去，绝不能"顺手"去掉 content 结尾的换行：
+        // 多个状态行正是靠行尾的 \n 才各自成行的（例如 "\n✅ 需求分析完成\n" 紧接着
+        // "✅ 信息充足，准备生成研究主题\n"）。剥掉行尾 \n 会让两行首尾相连成一坨。
+        // 思考区的排版问题统一由前端 .thinking-text 的样式解决，见 dobao-front/src/style.css。
+        sink.tryEmitNext(createResponse(content, type));
     }
 
     /**
@@ -560,26 +563,8 @@ public class PlanExecuteAgent extends BaseAgent {
         if (finished.get()) {
             return;
         }
-        sink.tryEmitNext(createResponse(trimBlankTail(content, type), type));
-    }
-
-    /**
-     * 收掉 thinking 文案结尾多余的换行，只留一个。
-     *
-     * <p>本类里不少状态行以 {@code "\n✅ …\n\n"} 这种形式发出（例如第 451、620、629、1117 行）。
-     * 前端把整段思考文本按 Markdown 渲染，结尾的双换行会被解析成"空行"，而空行会把后面的
-     * 行拆成独立段落，甚至让编号列表变成 loose list —— 于是每条状态之间都被撑出一大段空白。
-     * 这里统一压到单个换行：状态行仍然另起一行，但不再额外多出一个空行。
-     *
-     * <p>只处理结尾，保留开头的换行（那是用来把状态行与上一段模型输出分开的）。
-     * 正文（text）不动，避免影响最终回答的段落结构。
-     */
-    private String trimBlankTail(String content, String type) {
-        if (content == null || !AgentResponse.TYPE_THINKING.equals(type)) {
-            return content;
-        }
-        String trimmed = content.replaceFirst("[\\r\\n]+$", "");
-        return trimmed.isEmpty() ? content : trimmed;
+        // 同上：原样发送，换行是思考文本的一部分
+        sink.tryEmitNext(createResponse(content, type));
     }
 
     private void complete(Sinks.Many<String> sink,
