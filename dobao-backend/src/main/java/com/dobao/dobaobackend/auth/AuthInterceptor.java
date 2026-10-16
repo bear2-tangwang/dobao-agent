@@ -45,7 +45,6 @@ public class AuthInterceptor implements HandlerInterceptor {
             return true;
         }
         if (UserContext.getUserId() == null) {
-            // 未登录，返回 401 JSON 错误帧
             writeUnauthorized(request, response, required.message());
             return false;
         }

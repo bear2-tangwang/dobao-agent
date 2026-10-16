@@ -119,7 +119,7 @@ public class AuthController {
             return;
         }
         if (savedState == null || !savedState.equals(state)) {
-            // Session 过期、state 被重放、或跨站伪造的授权请求。 false 表示 session 不存在，返回null
+            // Session 过期、state 被重放、或跨站伪造的授权请求。
             boolean sessionSeen = request.getSession(false) != null;
             log.warn("OAuth state 校验失败: saved={}, received={}, sessionCookiePresent={}, cookieHeader={}",
                     savedState, state, sessionSeen,
