@@ -235,8 +235,6 @@ public class AgentController implements InitializingBean {
 
 
 
-
-
     /**
      * 初始化联网搜索工具回调（通过 Tavily MCP 服务）
      */
