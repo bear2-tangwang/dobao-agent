@@ -311,6 +311,7 @@ public class ChatReactAgent extends BaseAgent {
             return;
         }
 
+        // 执行工具调用
         executeToolCalls(sink, state.toolCalls, messages, hasSentFinalResult, state, agentState, () -> {
             if (!hasSentFinalResult.get()) {
                 scheduleRound(messages, sink, roundCounter,
